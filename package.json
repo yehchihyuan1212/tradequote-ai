@@ -1,0 +1,11 @@
+{
+  "dependencies": {
+    "lucide-react": "^1.25.0",
+    "recharts": "^3.9.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "postcss": "^8.5.20",
+    "tailwindcss": "^4.3.3"
+  }
+}
