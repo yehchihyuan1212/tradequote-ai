@@ -395,3 +395,75 @@ def sync_inbox(query: str = "from:chris990246@gmail.com", limit: int = 20,
         new += 1
 
     return {"ok": True, "new": new}
+
+@app.get("/api/reports")
+def reports(db: Session = Depends(get_db)):
+    from sqlalchemy import func
+
+    total_emails = db.query(Email).count()
+    total_quotes = db.query(Quotation).count()
+
+    # intent 分布
+    dist = dict(db.query(Inquiry.intent, func.count())
+                  .group_by(Inquiry.intent).all())
+
+    # 各產品被報價次數 + 總金額
+    prod_rows = (db.query(Product.name,
+                          func.count(Quotation.id),
+                          func.sum(Quotation.cif))
+                   .join(Quotation, Quotation.product_id == Product.id)
+                   .group_by(Product.name)
+                   .order_by(func.count(Quotation.id).desc())
+                   .all())
+    products = [{"name": n, "count": c, "value": float(v or 0)}
+                for n, c, v in prod_rows]
+
+    # 報價狀態分布(成交率用)
+    status_rows = dict(db.query(Quotation.status, func.count())
+                         .group_by(Quotation.status).all())
+
+    # 目的地分布
+    dest_rows = (db.query(Quotation.destination, func.count())
+                   .group_by(Quotation.destination)
+                   .order_by(func.count(Quotation.id).desc()).all())
+    destinations = [{"name": d, "count": c} for d, c in dest_rows]
+
+    total_value = db.query(func.sum(Quotation.cif)).scalar() or 0
+    avg_conf = db.query(func.avg(Inquiry.confidence)).scalar() or 0
+
+    return {
+        "total_emails": total_emails,
+        "total_quotes": total_quotes,
+        "total_value": float(total_value),
+        "avg_confidence": round(float(avg_conf)),
+        "intent_distribution": dist,
+        "top_products": products,
+        "destinations": destinations,
+        "quote_status": status_rows,
+    }
+    
+@app.get("/api/system-info")
+def system_info(db: Session = Depends(get_db)):
+    import os
+    from app.services.ai_service import MODEL
+
+    # 檢查 Ollama 是否在線
+    ollama_ok = False
+    try:
+        import httpx
+        r = httpx.get("http://localhost:11434/api/tags", timeout=2)
+        ollama_ok = r.status_code == 200
+    except Exception:
+        ollama_ok = False
+
+    # 從 token.json 判斷 Gmail 是否授權
+    gmail_ok = os.path.exists("token.json")
+
+    return {
+        "model": MODEL,
+        "model_runtime": "Ollama (local)",
+        "ollama_online": ollama_ok,
+        "gmail_authorised": gmail_ok,
+        "data_location": "Local SQLite (tradequote.db)",
+        "privacy_note": "All email analysis runs on this machine. No data leaves the device.",
+    }

@@ -57,3 +57,7 @@ export async function syncInbox() {
   const r = await fetch(`${BASE}/inbox/sync`, { method: "POST" });
   return r.json();
 }
+
+export const getReports = () => get("/reports");
+
+export const getSystemInfo = () => get("/system-info");

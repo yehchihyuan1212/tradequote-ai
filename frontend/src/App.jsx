@@ -12,7 +12,7 @@ import {
 
 import { getInbox, getEmail, getStats, getProducts, getQuotations, getCustomers,
          markViewed, getSettings, getFreight, saveSettings,
-         getDrafts, generateDraft, saveDraft, sendDraftToGmail, recalcQuote,syncInbox } from "./api";
+         getDrafts, generateDraft, saveDraft, sendDraftToGmail, recalcQuote,syncInbox, getReports, getSystemInfo } from "./api";
 
 /* ---------------- mock data ---------------- */
 
@@ -986,51 +986,113 @@ function PriceSettings() {
   );
 }
 function Reports() {
-  const byProduct = [
-    { name: "USB Cable", v: 14 }, { name: "Charger", v: 11 },
-    { name: "Power Bank", v: 8 }, { name: "Speaker", v: 6 }, { name: "Plastic Case", v: 4 },
-  ];
+  const [d, setD] = React.useState(null);
+
+  React.useEffect(() => {
+    getReports().then(setD).catch(() => {});
+  }, []);
+
+  if (!d) return <Card><div className="py-16 text-center text-sm text-slate-400">Loading…</div></Card>;
+
+  const intentMeta = {
+    quotation: ["Quotation", "#3b82f6"],
+    sample_request: ["Sample Request", "#f97316"],
+    delivery_followup: ["Delivery Follow-up", "#a855f7"],
+    after_sales: ["After-sales", "#ef4444"],
+    payment: ["Payment", "#fbbf24"],
+    other: ["Other", "#94a3b8"],
+  };
+  const intentData = Object.entries(d.intent_distribution).map(([k, v]) => ({
+    name: intentMeta[k]?.[0] || k,
+    color: intentMeta[k]?.[1] || "#94a3b8",
+    value: v,
+  }));
+
+  const fmt = (n) => "USD " + Math.round(n).toLocaleString();
+
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
-        <Stat icon={FileText}   value="32"  label="Quotations"  sub="This month"      tint="bg-blue-50 text-blue-600" />
-        <Stat icon={TrendingUp} value="48%" label="Win rate"    sub="+6% vs last month" tint="bg-emerald-50 text-emerald-600" />
-        <Stat icon={DollarSign} value="86k" label="Quoted value" sub="USD, this month" tint="bg-amber-50 text-amber-600" />
-        <Stat icon={Bot}        value="96%" label="AI accuracy" sub="Confirmed by sales" tint="bg-violet-50 text-violet-600" />
+        <Stat icon={Mail}       value={d.total_emails}            label="Emails analysed" sub="From Gmail"          tint="bg-blue-50 text-blue-600" />
+        <Stat icon={FileText}   value={d.total_quotes}            label="Quotations"      sub="Auto-priced"         tint="bg-amber-50 text-amber-600" />
+        <Stat icon={DollarSign} value={fmt(d.total_value)}        label="Total quoted"    sub="Sum of CIF"          tint="bg-emerald-50 text-emerald-600" />
+        <Stat icon={Bot}        value={`${d.avg_confidence}%`}    label="Avg confidence"  sub="AI extraction"       tint="bg-violet-50 text-violet-600" />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <Card title="Most requested products">
+        <Card title="Intent distribution">
           <div className="px-6 pb-6">
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={byProduct} margin={{ left: -20 }}>
+            <ResponsiveContainer width="100%" height={280}>
+              <PieChart>
+                <Pie data={intentData} dataKey="value" nameKey="name"
+                     innerRadius={60} outerRadius={100} paddingAngle={2}>
+                  {intentData.map((x) => <Cell key={x.name} fill={x.color} />)}
+                </Pie>
+                <Tooltip />
+              </PieChart>
+            </ResponsiveContainer>
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              {intentData.map((x) => (
+                <div key={x.name} className="flex items-center gap-2 text-sm">
+                  <span className="w-2.5 h-2.5 rounded-full" style={{ background: x.color }} />
+                  <span className="text-slate-600">{x.name}</span>
+                  <span className="text-slate-400 ml-auto">{x.value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Card>
+
+        <Card title="Quoted value by product">
+          <div className="px-6 pb-6">
+            <ResponsiveContainer width="100%" height={280}>
+              <BarChart data={d.top_products} margin={{ left: 10, right: 10 }}>
                 <CartesianGrid stroke="#f1f5f9" vertical={false} />
                 <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
-                <Tooltip cursor={{ fill: "#f8fafc" }} />
-                <Bar dataKey="v" fill="#3b82f6" radius={[6, 6, 0, 0]} />
+                <Tooltip formatter={(v) => fmt(v)} cursor={{ fill: "#f8fafc" }} />
+                <Bar dataKey="value" fill="#3b82f6" radius={[6, 6, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
         </Card>
+      </div>
 
-        <Card title="Inquiry volume">
-          <div className="px-6 pb-6">
-            <ResponsiveContainer width="100%" height={260}>
-              <AreaChart data={trend} margin={{ left: -20 }}>
-                <defs>
-                  <linearGradient id="g2" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#8b5cf6" stopOpacity={0.28} />
-                    <stop offset="100%" stopColor="#8b5cf6" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid stroke="#f1f5f9" vertical={false} />
-                <XAxis dataKey="d" tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 11, fill: "#94a3b8" }} axisLine={false} tickLine={false} />
-                <Tooltip />
-                <Area type="monotone" dataKey="v" stroke="#8b5cf6" strokeWidth={2} fill="url(#g2)" />
-              </AreaChart>
-            </ResponsiveContainer>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <Card title="Top products by inquiries">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="border-y border-slate-100">
+                <tr><Th>Product</Th><Th>Quotations</Th><Th>Total value</Th></tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {d.top_products.map((p) => (
+                  <tr key={p.name} className="hover:bg-slate-50">
+                    <Td className="font-medium text-slate-900">{p.name}</Td>
+                    <Td>{p.count}</Td>
+                    <Td className="tabular-nums font-medium">{fmt(p.value)}</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+
+        <Card title="Quotations by destination">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="border-y border-slate-100">
+                <tr><Th>Destination</Th><Th>Quotations</Th></tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {d.destinations.map((x) => (
+                  <tr key={x.name} className="hover:bg-slate-50">
+                    <Td className="font-medium text-slate-900">{x.name}</Td>
+                    <Td>{x.count}</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </Card>
       </div>
@@ -1039,44 +1101,67 @@ function Reports() {
 }
 
 function SettingsPage() {
-  const [v, setV] = useState({
-    company: "Taiwan Electronics Co., Ltd.",
-    signature: "Amy Chen / Sales Department",
-    lang: "English",
-    currency: "USD",
-    model: "gpt-4o-mini",
-  });
-  const set = (k) => (x) => setV((s) => ({ ...s, [k]: x }));
+  const [info, setInfo] = React.useState(null);
+  const [company, setCompany] = React.useState("Taiwan Electronics Co., Ltd.");
+  const [signature, setSignature] = React.useState("Sales Department");
+
+  React.useEffect(() => {
+    getSystemInfo().then(setInfo).catch(() => {});
+  }, []);
+
+  const StatusRow = ({ label, sub, ok, okText, badText }) => (
+    <div className="flex items-center justify-between p-4 rounded-lg border border-slate-200">
+      <div>
+        <div className="text-sm font-medium text-slate-900">{label}</div>
+        <div className="text-xs text-slate-400 font-mono mt-0.5">{sub}</div>
+      </div>
+      <Badge cls={ok ? "bg-green-50 text-green-700" : "bg-slate-100 text-slate-500"}>
+        {ok ? okText : badText}
+      </Badge>
+    </div>
+  );
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
       <Card title="Company profile">
         <div className="px-6 pb-6 space-y-4">
-          <Field label="Company name" value={v.company} onChange={set("company")} />
-          <Field label="Email signature" value={v.signature} onChange={set("signature")} />
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="Default language" value={v.lang} onChange={set("lang")} />
-            <Field label="Default currency" value={v.currency} onChange={set("currency")} />
-          </div>
+          <Field label="Company name" value={company} onChange={setCompany} />
+          <Field label="Email signature" value={signature} onChange={setSignature} />
+          <p className="text-xs text-slate-400">
+            The signature appears at the end of generated draft replies.
+          </p>
         </div>
       </Card>
 
-      <Card title="Integrations">
+      <Card title="System & integrations">
         <div className="px-6 pb-6 space-y-4">
-          {[["Gmail API", "amy.chen@company.com", true],
-            ["OpenAI API", "sk-••••••••••••••4a9f", true],
-            ["SMTP relay", "Not configured", false]].map(([k, val, ok]) => (
-            <div key={k} className="flex items-center justify-between p-4 rounded-lg border border-slate-200">
-              <div>
-                <div className="text-sm font-medium text-slate-900">{k}</div>
-                <div className="text-xs text-slate-400 font-mono mt-0.5">{val}</div>
+          {!info && <div className="py-8 text-center text-sm text-slate-400">Loading…</div>}
+          {info && (
+            <>
+              <StatusRow
+                label="Local language model"
+                sub={`${info.model} · ${info.model_runtime}`}
+                ok={info.ollama_online}
+                okText="Online" badText="Offline"
+              />
+              <StatusRow
+                label="Gmail API"
+                sub={info.gmail_authorised ? "Authorised via OAuth" : "Not authorised"}
+                ok={info.gmail_authorised}
+                okText="Connected" badText="Not set"
+              />
+              <StatusRow
+                label="Database"
+                sub={info.data_location}
+                ok={true}
+                okText="Local" badText="—"
+              />
+              <div className="p-4 rounded-lg bg-emerald-50 border border-emerald-100">
+                <div className="text-xs font-medium text-emerald-800 mb-1">Privacy</div>
+                <p className="text-xs text-emerald-700 leading-relaxed">{info.privacy_note}</p>
               </div>
-              <Badge cls={ok ? "bg-green-50 text-green-700" : "bg-slate-100 text-slate-500"}>
-                {ok ? "Connected" : "Not set"}
-              </Badge>
-            </div>
-          ))}
-          <Field label="Analysis model" value={v.model} onChange={set("model")} />
+            </>
+          )}
         </div>
       </Card>
     </div>
@@ -1158,16 +1243,7 @@ export default function App() {
         <header className="h-20 bg-white border-b border-slate-200 flex items-center px-5 lg:px-8 gap-4 shrink-0">
           <button onClick={() => setNavOpen(true)} className="lg:hidden text-slate-600"><Menu size={22} /></button>
           <h1 className="text-lg font-semibold text-slate-900 flex-1">{title}</h1>
-          <div className="flex items-center gap-2.5 pl-4 border-l border-slate-200">
-            <div className="w-9 h-9 rounded-full bg-slate-200 grid place-items-center text-slate-500 text-sm font-semibold">A</div>
-            <div className="hidden sm:block">
-              <div className="text-sm font-semibold text-slate-900 leading-tight">Amy Chen</div>
-              <div className="text-xs text-slate-400">Sales</div>
-            </div>
-            <ChevronDown size={16} className="text-slate-400 hidden sm:block" />
-          </div>
         </header>
-
         <main className="flex-1 p-5 lg:p-8 overflow-x-hidden">{body}</main>
       </div>
     </div>
