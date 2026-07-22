@@ -121,3 +121,22 @@ class Quotation(Base):
 
     inquiry: Mapped["Inquiry"] = relationship(back_populates="quotation")
     product: Mapped["Product"] = relationship()
+    
+class Draft(Base):
+    __tablename__ = "drafts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    quotation_id: Mapped[int | None] = mapped_column(ForeignKey("quotations.id"))
+    inquiry_id: Mapped[int] = mapped_column(ForeignKey("inquiries.id"), unique=True)
+
+    to_email: Mapped[str] = mapped_column(String(200))
+    subject: Mapped[str] = mapped_column(String(500))
+    body: Mapped[str] = mapped_column(Text)
+
+    status: Mapped[str] = mapped_column(String(20), default="draft")
+    gmail_draft_id: Mapped[str | None] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(default=datetime.now, onupdate=datetime.now)
+
+    inquiry: Mapped["Inquiry"] = relationship()
+    quotation: Mapped["Quotation"] = relationship()

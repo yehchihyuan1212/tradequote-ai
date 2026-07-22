@@ -27,3 +27,28 @@ export async function saveSettings(payload) {
   if (!r.ok) throw new Error("Save failed");
   return r.json();
 }
+
+export const getDrafts = () => get("/drafts");
+
+export async function generateDraft(quoteNo) {
+  const r = await fetch(`${BASE}/quotations/${quoteNo}/draft`, { method: "POST" });
+  return r.json();
+}
+
+export async function saveDraft(id, subject, body) {
+  const r = await fetch(`${BASE}/drafts/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ subject, body }),
+  });
+  return r.json();
+}
+
+export async function sendDraftToGmail(id) {
+  const r = await fetch(`${BASE}/drafts/${id}/send-to-gmail`, { method: "POST" });
+  return r.json();
+}
+export async function recalcQuote(quoteNo) {
+  const r = await fetch(`${BASE}/quotations/${quoteNo}/recalculate`, { method: "POST" });
+  return r.json();
+}

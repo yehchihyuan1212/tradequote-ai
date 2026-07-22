@@ -11,7 +11,8 @@ import {
 } from "recharts";
 
 import { getInbox, getEmail, getStats, getProducts, getQuotations, getCustomers,
-         markViewed, getSettings, getFreight, saveSettings } from "./api";
+         markViewed, getSettings, getFreight, saveSettings,
+         getDrafts, generateDraft, saveDraft, sendDraftToGmail, recalcQuote } from "./api";
 
 /* ---------------- mock data ---------------- */
 
@@ -591,9 +592,16 @@ function Quotations() {
   const [rows, setRows] = React.useState([]);
   const [open, setOpen] = React.useState(null);
 
-  React.useEffect(() => {
+  const load = React.useCallback(() => {
     getQuotations().then((d) => { setRows(d); if (d.length) setOpen(d[0]); }).catch(() => {});
   }, []);
+
+  React.useEffect(() => { load(); }, [load]);
+
+  async function recalc(quoteNo) {
+    await recalcQuote(quoteNo);
+    load();
+  }
 
   const stint = (s) => ({
     draft: "bg-slate-100 text-slate-600",
@@ -638,7 +646,13 @@ function Quotations() {
       </Card>
 
       {open && (
-        <Card title={`Price breakdown — ${open.quote_no}`}>
+        <Card title={`Price breakdown — ${open.quote_no}`}
+          action={
+            <button onClick={() => recalc(open.quote_no)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700">
+              <RefreshCw size={14} /> Recalculate
+            </button>
+          }>
           <div className="px-6 pb-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
               {[["EXW", open.exw, "Ex Works"],
@@ -664,63 +678,125 @@ function Quotations() {
 }
 
 function Drafts() {
-  const [sel, setSel] = useState(0);
-  const d = emails[sel];
-  const draft = `Dear ${d.contact},
+  const [rows, setRows] = React.useState([]);
+  const [sel, setSel] = React.useState(null);
+  const [editing, setEditing] = React.useState(false);
+  const [subject, setSubject] = React.useState("");
+  const [body, setBody] = React.useState("");
+  const [msg, setMsg] = React.useState(null);
 
-Thank you for your inquiry regarding ${d.product}.
+  const load = React.useCallback(() => {
+    getDrafts().then((d) => {
+      setRows(d);
+      if (d.length && !sel) pick(d[0]);
+    }).catch(() => {});
+  }, [sel]);
 
-We are pleased to quote as follows:
+  React.useEffect(() => { load(); }, []);
 
-  Product   : ${d.product}
-  Quantity  : ${d.qty.toLocaleString()} pcs
-  Unit price: USD ${(products.find(p => p.name === d.product)?.price ?? 0).toFixed(2)}
-  Incoterm  : CIF ${d.country}
-  Lead time : ${products.find(p => p.name === d.product)?.lead ?? 20} days after order confirmation
+  function pick(d) {
+    setSel(d);
+    setSubject(d.subject);
+    setBody(d.body);
+    setEditing(false);
+    setMsg(null);
+  }
 
-The quotation is valid for 30 days. Please let us know if you need any adjustment on quantity or terms.
+  async function save() {
+    await saveDraft(sel.id, subject, body);
+    setEditing(false);
+    setMsg("Saved.");
+    load();
+  }
 
-Best regards,
-Amy Chen
-Sales Department`;
+  async function toGmail() {
+    setMsg("Sending to Gmail…");
+    const r = await sendDraftToGmail(sel.id);
+    if (r.ok) {
+      setMsg("Saved to Gmail drafts. Review and send it there.");
+      load();
+    } else {
+      setMsg(r.error || "Failed.");
+    }
+  }
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
       <Card title="Drafts" className="lg:col-span-1">
         <div className="divide-y divide-slate-100">
-          {emails.map((e, i) => (
-            <button key={e.id} onClick={() => setSel(i)}
-              className={`w-full text-left px-6 py-4 hover:bg-slate-50 ${i === sel ? "bg-blue-50/60" : ""}`}>
+          {rows.map((d) => (
+            <button key={d.id} onClick={() => pick(d)}
+              className={`w-full text-left px-6 py-4 hover:bg-slate-50 ${sel?.id === d.id ? "bg-blue-50/60" : ""}`}>
               <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-semibold text-slate-900 truncate">{e.from}</span>
-                <Badge cls={STATUS[e.status]}>{e.status}</Badge>
+                <span className="text-sm font-semibold text-slate-900 truncate">{d.to}</span>
+                <Badge cls={d.status === "sent" ? "bg-green-50 text-green-700" : "bg-slate-100 text-slate-600"}>
+                  {d.status === "sent" ? "In Gmail" : "Draft"}
+                </Badge>
               </div>
-              <div className="text-xs text-slate-500 mt-1 truncate">Re: {e.subject}</div>
+              <div className="text-xs text-slate-500 mt-1 truncate">{d.subject}</div>
             </button>
           ))}
         </div>
+        {rows.length === 0 && (
+          <div className="py-16 text-center text-sm text-slate-400 px-6">
+            No drafts yet. Generate one from a quotation in the Quotations page.
+          </div>
+        )}
       </Card>
 
       <Card title="Preview" className="lg:col-span-2"
-        action={
+        action={sel && (
           <div className="flex gap-2">
-            <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50">
-              <Pencil size={14} /> Edit
-            </button>
-            <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700">
-              <ExternalLink size={14} /> Open in Gmail
+            {editing ? (
+              <button onClick={save}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700">
+                <Check size={14} /> Save
+              </button>
+            ) : (
+              <button onClick={() => setEditing(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50">
+                <Pencil size={14} /> Edit
+              </button>
+            )}
+            <button onClick={toGmail}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800">
+              <ExternalLink size={14} /> Send to Gmail
             </button>
           </div>
-        }>
+        )}>
         <div className="px-6 pb-6">
-          <div className="pb-4 mb-4 border-b border-slate-100 space-y-1 text-sm">
-            <div><span className="text-slate-400 w-16 inline-block">To</span> <span className="text-slate-900">{d.email}</span></div>
-            <div><span className="text-slate-400 w-16 inline-block">Subject</span> <span className="text-slate-900">Re: {d.subject}</span></div>
-          </div>
-          <pre className="text-sm text-slate-700 whitespace-pre-wrap font-sans leading-relaxed">{draft}</pre>
-          <div className="mt-6 p-3 rounded-lg bg-amber-50 border border-amber-100 text-xs text-amber-800">
-            Drafts are saved to Gmail only. Nothing is sent until you press Send in Gmail.
-          </div>
+          {!sel && <div className="py-16 text-center text-sm text-slate-400">Select a draft.</div>}
+          {sel && (
+            <>
+              <div className="pb-4 mb-4 border-b border-slate-100 space-y-2 text-sm">
+                <div><span className="text-slate-400 w-16 inline-block">To</span> <span className="text-slate-900">{sel.to}</span></div>
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-400 w-16 inline-block">Subject</span>
+                  {editing ? (
+                    <input value={subject} onChange={(e) => setSubject(e.target.value)}
+                      className="flex-1 px-2 py-1 rounded border border-slate-200 text-sm" />
+                  ) : (
+                    <span className="text-slate-900">{sel.subject}</span>
+                  )}
+                </div>
+              </div>
+              {editing ? (
+                <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={16}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm font-mono
+                             focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500" />
+              ) : (
+                <pre className="text-sm text-slate-700 whitespace-pre-wrap font-sans leading-relaxed">{sel.body}</pre>
+              )}
+              {msg && (
+                <div className="mt-4 p-3 rounded-lg bg-amber-50 border border-amber-100 text-xs text-amber-800">
+                  {msg}
+                </div>
+              )}
+              <div className="mt-4 text-xs text-slate-400">
+                "Send to Gmail" saves this as a Gmail draft — it does not send the email. You confirm and send from Gmail.
+              </div>
+            </>
+          )}
         </div>
       </Card>
     </div>

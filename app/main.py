@@ -8,7 +8,9 @@ from app.database import get_db
 from app.models import Customer, Email, Inquiry, Product, Quotation
 from app.services.ai_service import analyse
 from datetime import datetime
-from app.models import Customer, Email, Inquiry, PriceSetting, Product, Quotation
+from app.models import Customer, Draft, Email, Inquiry, PriceSetting, Product, Quotation
+from app.services.gmail_service import create_draft
+from app.services.draft_service import compose_quotation_reply
 
 app = FastAPI(title="TradeQuote AI")
 
@@ -187,3 +189,108 @@ def freight(db: Session = Depends(get_db)):
     return [{"destination": f.destination, "port": f.port,
              "cost_usd": f.cost_usd, "transit_days": f.transit_days}
             for f in db.query(Freight).order_by(Freight.destination).all()]
+       
+@app.get("/api/drafts")
+def list_drafts(db: Session = Depends(get_db)):
+    rows = db.query(Draft).order_by(Draft.id.desc()).all()
+    return [{
+        "id": d.id,
+        "to": d.to_email,
+        "subject": d.subject,
+        "body": d.body,
+        "status": d.status,
+        "company": d.inquiry.company,
+        "gmail_draft_id": d.gmail_draft_id,
+        "updated_at": d.updated_at.strftime("%Y-%m-%d %H:%M"),
+    } for d in rows]
+
+
+@app.post("/api/quotations/{quote_no}/draft")
+def generate_draft(quote_no: str, db: Session = Depends(get_db)):
+    """從報價產生一封草稿，存進資料庫（還沒送 Gmail）。"""
+    q = db.query(Quotation).filter_by(quote_no=quote_no).first()
+    if not q:
+        return {"error": "Quotation not found"}
+
+    existing = db.query(Draft).filter_by(inquiry_id=q.inquiry_id).first()
+    if existing:
+        return {"error": "Draft already exists", "draft_id": existing.id}
+
+    inq = q.inquiry
+    email = inq.email
+    body = compose_quotation_reply(
+        contact=inq.contact, product=q.product.name, sku=q.product.sku,
+        qty=q.quantity, dest=q.destination, cif=q.cif, unit_cif=q.unit_cif,
+        moq=q.product.moq, lead_days=q.product.lead_days,
+    )
+    d = Draft(
+        quotation_id=q.id, inquiry_id=inq.id,
+        to_email=email.sender_email,
+        subject="Re: " + (email.subject or "Your inquiry"),
+        body=body,
+    )
+    db.add(d)
+    inq.status = "drafted"
+    db.commit()
+    return {"ok": True, "draft_id": d.id}
+
+
+class DraftEdit(BaseModel):
+    subject: str
+    body: str
+
+
+@app.put("/api/drafts/{draft_id}")
+def edit_draft(draft_id: int, payload: DraftEdit, db: Session = Depends(get_db)):
+    d = db.query(Draft).filter_by(id=draft_id).first()
+    if not d:
+        return {"error": "Not found"}
+    d.subject = payload.subject
+    d.body = payload.body
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/drafts/{draft_id}/send-to-gmail")
+def send_to_gmail(draft_id: int, db: Session = Depends(get_db)):
+    """在 Gmail 建立草稿（不是寄出，是存進草稿匣）。"""
+    d = db.query(Draft).filter_by(id=draft_id).first()
+    if not d:
+        return {"error": "Not found"}
+    try:
+        gmail_id = create_draft(d.to_email, d.subject, d.body)
+    except Exception as e:
+        return {"error": "Gmail failed: " + str(e)}
+    d.gmail_draft_id = gmail_id
+    d.status = "sent"
+    if d.inquiry.quotation:
+        d.inquiry.quotation.draft_id = gmail_id
+    db.commit()
+    return {"ok": True, "gmail_draft_id": gmail_id}  
+@app.post("/api/quotations/{quote_no}/recalculate")
+def recalculate(quote_no: str, db: Session = Depends(get_db)):
+    """用目前的 Price Settings 重算,更新快照。"""
+    from app.services.pricing_service import PriceSettings, calculate
+
+    q = db.query(Quotation).filter_by(quote_no=quote_no).first()
+    if not q:
+        return {"error": "Not found"}
+
+    row = db.query(PriceSetting).first()
+    s = PriceSettings(
+        profit_margin=row.profit_margin,
+        local_charges=row.local_charges,
+        insurance=row.insurance,
+        bank_charges=row.bank_charges,
+        usd_twd=row.usd_twd,
+    )
+    calc = calculate(q.product.unit_price, q.quantity, q.destination, s)
+    q.cost = calc["cost"]
+    q.exw = calc["exw"]
+    q.fob = calc["fob"]
+    q.cif = calc["cif"]
+    q.unit_cif = calc["unit_cif"]
+    q.margin_used = s.profit_margin
+    q.freight_used = calc["freight"]
+    db.commit()
+    return {"ok": True, "cif": q.cif, "margin": q.margin_used} 
