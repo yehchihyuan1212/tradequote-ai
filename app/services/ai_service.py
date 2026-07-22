@@ -23,7 +23,8 @@ Schema:
   "summary": one English sentence describing what the customer wants
 }
 
-Use null for anything not stated. Never guess."""
+Use null for anything not stated. Never guess.
+"""
 
 
 def _clean(raw: str) -> str:

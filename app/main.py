@@ -467,3 +467,56 @@ def system_info(db: Session = Depends(get_db)):
         "data_location": "Local SQLite (tradequote.db)",
         "privacy_note": "All email analysis runs on this machine. No data leaves the device.",
     }
+    
+@app.get("/api/export")
+def export_excel(db: Session = Depends(get_db)):
+    from io import BytesIO
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    from fastapi.responses import StreamingResponse
+
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="1E293B")
+
+    def write_sheet(title, headers, rows):
+        ws = wb.create_sheet(title[:31])
+        ws.append(headers)
+        for c in ws[1]:
+            c.font = header_font
+            c.fill = header_fill
+        for r in rows:
+            ws.append(r)
+        for i, h in enumerate(headers, 1):
+            width = max(len(str(h)), *(len(str(r[i-1])) for r in rows)) if rows else len(h)
+            ws.column_dimensions[chr(64+i)].width = min(width + 4, 50)
+
+    intents = ["quotation", "sample_request", "delivery_followup", "after_sales", "payment"]
+    for intent in intents:
+        rows = db.query(Inquiry).filter_by(intent=intent).all()
+        write_sheet(
+            intent.replace("_", " ").title(),
+            ["Date", "Company", "Contact", "Product", "Qty", "Destination", "Confidence", "Summary"],
+            [[i.analysed_at.strftime("%Y-%m-%d %H:%M"), i.company or "", i.contact or "",
+              i.product_text or "", i.quantity or "", i.destination or "",
+              f"{i.confidence}%", i.summary or ""] for i in rows],
+        )
+
+    quotes = db.query(Quotation).all()
+    write_sheet(
+        "Quotations",
+        ["Quote No", "Company", "Product", "Qty", "Destination", "EXW", "FOB", "CIF", "Status"],
+        [[q.quote_no, q.inquiry.company or "", q.product.name, q.quantity, q.destination,
+          round(q.exw), round(q.fob), round(q.cif), q.status] for q in quotes],
+    )
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=tradequote_export.xlsx"},
+    )

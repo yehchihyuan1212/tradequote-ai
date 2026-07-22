@@ -1012,13 +1012,19 @@ function Reports() {
 
   return (
     <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <h2 className="text-base font-semibold text-slate-900">Analytics overview</h2>
+        <a href="http://localhost:8000/api/export"
+          className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800">
+          <FileText size={15} /> Export Excel
+        </a>
+      </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
         <Stat icon={Mail}       value={d.total_emails}            label="Emails analysed" sub="From Gmail"          tint="bg-blue-50 text-blue-600" />
         <Stat icon={FileText}   value={d.total_quotes}            label="Quotations"      sub="Auto-priced"         tint="bg-amber-50 text-amber-600" />
         <Stat icon={DollarSign} value={fmt(d.total_value)}        label="Total quoted"    sub="Sum of CIF"          tint="bg-emerald-50 text-emerald-600" />
         <Stat icon={Bot}        value={`${d.avg_confidence}%`}    label="Avg confidence"  sub="AI extraction"       tint="bg-violet-50 text-violet-600" />
       </div>
-
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <Card title="Intent distribution">
           <div className="px-6 pb-6">
