@@ -52,3 +52,8 @@ export async function recalcQuote(quoteNo) {
   const r = await fetch(`${BASE}/quotations/${quoteNo}/recalculate`, { method: "POST" });
   return r.json();
 }
+
+export async function syncInbox() {
+  const r = await fetch(`${BASE}/inbox/sync`, { method: "POST" });
+  return r.json();
+}

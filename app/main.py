@@ -96,11 +96,14 @@ def email_detail(message_id: str, db: Session = Depends(get_db)):
 def stats(db: Session = Depends(get_db)):
     dist = dict(db.query(Inquiry.intent, func.count())
                   .group_by(Inquiry.intent).all())
+    from app.models import Draft
     return {
         "emails": db.query(Email).count(),
         "analysed": db.query(Inquiry).count(),
         "quotations": db.query(Quotation).count(),
         "customers": db.query(Customer).count(),
+        "unread": db.query(Email).filter(Email.viewed_at.is_(None)).count(),
+        "pending_drafts": db.query(Draft).filter(Draft.status == "draft").count(),
         "intent_distribution": dist,
     }
 
@@ -294,3 +297,101 @@ def recalculate(quote_no: str, db: Session = Depends(get_db)):
     q.freight_used = calc["freight"]
     db.commit()
     return {"ok": True, "cif": q.cif, "margin": q.margin_used} 
+
+@app.post("/api/inbox/sync")
+def sync_inbox(query: str = "from:chris990246@gmail.com", limit: int = 20,
+               db: Session = Depends(get_db)):
+    """抓 Gmail 新信 → AI 分析 → 算價 → 入庫。回傳新增數量。"""
+    from app.services.ai_service import MODEL, analyse
+    from app.services.gmail_service import fetch_new
+    from app.services.pricing_service import PriceSettings, calculate
+
+    row = db.query(PriceSetting).first()
+    s = PriceSettings(
+        profit_margin=row.profit_margin, local_charges=row.local_charges,
+        insurance=row.insurance, bank_charges=row.bank_charges, usd_twd=row.usd_twd,
+    )
+
+    def match_product(text):
+        if not text:
+            return None
+        n = text.lower()
+        for p in db.query(Product).all():
+            names = [p.name.lower()]
+            if p.aliases:
+                names += [a.strip().lower() for a in p.aliases.split(",")]
+            if any(c in n or n in c for c in names):
+                return p
+        words = {w.strip("-,.").rstrip("s") for w in n.split()}
+        best, score = None, 0
+        for p in db.query(Product).all():
+            target = {w.rstrip("s") for w in p.name.lower().split()}
+            hits = len(words & target)
+            if hits > score:
+                best, score = p, hits
+        return best if score else None
+
+    new = 0
+    try:
+        messages = fetch_new(limit, query)
+    except Exception as e:
+        return {"error": "Gmail failed: " + str(e)}
+
+    for m in messages:
+        if db.query(Email).filter_by(message_id=m["message_id"]).first():
+            continue
+
+        email = Email(
+            message_id=m["message_id"], sender_name=m["sender_name"],
+            sender_email=m["sender_email"], subject=m["subject"],
+            body=m["body"], received_at=m["date"],
+        )
+        db.add(email)
+        db.flush()
+
+        try:
+            r = analyse(m["subject"], m["body"])
+        except Exception:
+            db.commit()
+            continue
+
+        cust = db.query(Customer).filter_by(company=r.get("company")).first() if r.get("company") else None
+        if not cust:
+            cust = db.query(Customer).filter_by(email=m["sender_email"]).first()
+        if not cust:
+            cust = Customer(company=r.get("company") or m["sender_name"],
+                            email=m["sender_email"], country=r.get("destination"))
+            db.add(cust)
+            db.flush()
+        email.customer_id = cust.id
+
+        inq = Inquiry(
+            email_id=email.id, intent=r.get("intent", "other"),
+            confidence=r.get("confidence", 0), company=r.get("company"),
+            contact=r.get("contact"), product_text=r.get("product"),
+            quantity=r.get("quantity"), destination=r.get("destination"),
+            incoterm=r.get("incoterm"), summary=r.get("summary"), model_name=MODEL,
+        )
+        db.add(inq)
+        db.flush()
+
+        if inq.intent == "quotation":
+            p = match_product(inq.product_text)
+            if p:
+                qty = inq.quantity or p.moq
+                dest = inq.destination or "Japan"
+                calc = calculate(p.unit_price, qty, dest, s)
+                n = db.query(Quotation).count() + 1
+                db.add(Quotation(
+                    inquiry_id=inq.id, quote_no=f"Q-2026-{n:03d}",
+                    product_id=p.id, quantity=qty, destination=calc["destination"],
+                    cost=calc["cost"], exw=calc["exw"], fob=calc["fob"],
+                    cif=calc["cif"], unit_cif=calc["unit_cif"],
+                    margin_used=s.profit_margin, freight_used=calc["freight"],
+                ))
+                inq.status = "quoted"
+
+        db.commit()
+        new += 1
+
+    return {"ok": True, "new": new}

@@ -12,7 +12,7 @@ import {
 
 import { getInbox, getEmail, getStats, getProducts, getQuotations, getCustomers,
          markViewed, getSettings, getFreight, saveSettings,
-         getDrafts, generateDraft, saveDraft, sendDraftToGmail, recalcQuote } from "./api";
+         getDrafts, generateDraft, saveDraft, sendDraftToGmail, recalcQuote,syncInbox } from "./api";
 
 /* ---------------- mock data ---------------- */
 
@@ -140,10 +140,10 @@ const intentDist = [
 
 const NAV = [
   { key: "dashboard", label: "Dashboard",      icon: Home },
-  { key: "inbox",     label: "Inbox",          icon: Inbox, badge: 5 },
-  { key: "ai",        label: "AI Review",      icon: Bot,   badge: 2 },
+  { key: "inbox",     label: "Inbox",          icon: Inbox },
+  { key: "ai",        label: "AI Review",      icon: Bot },
   { key: "quotations",label: "Quotations",     icon: DollarSign },
-  { key: "drafts",    label: "Drafts",         icon: Send,  badge: 3 },
+  { key: "drafts",    label: "Drafts",         icon: Send },
   { key: "customers", label: "Customers",      icon: Users },
   { key: "products",  label: "Products",       icon: Package },
   { key: "pricing",   label: "Price Settings", icon: Wallet },
@@ -338,6 +338,13 @@ function InboxPage({ go }) {
   }, []);
 
   React.useEffect(load, [load]);
+  const [syncing, setSyncing] = React.useState(false);
+  async function sync() {
+    setSyncing(true);
+    await syncInbox();
+    load();
+    setSyncing(false);
+  }
 
   const shown = rows.filter((r) =>
     `${r.company} ${r.subject} ${r.intent}`.toLowerCase().includes(q.toLowerCase()));
@@ -368,6 +375,10 @@ function InboxPage({ go }) {
               className="pl-9 pr-3 py-2 w-56 rounded-lg border border-slate-200 text-sm
                          focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500" />
           </div>
+          <button onClick={sync} disabled={syncing}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:bg-slate-400">
+            <RefreshCw size={14} className={syncing ? "animate-spin" : ""} /> {syncing ? "Syncing…" : "Sync Gmail"}
+          </button>
           <button onClick={load}
             className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700">
             <RefreshCw size={14} /> Refresh
@@ -549,14 +560,17 @@ function AIReview({ selected }) {
                       {q.quote_no} — matched SKU {q.sku}
                     </div>
                     <div className="grid grid-cols-3 gap-3">
-                      {[["EXW", q.exw], ["FOB", q.fob], ["CIF", q.cif]].map(([k, v], i) => (
-                        <div key={k} className={`rounded-lg p-4 border ${i === 2 ? "border-blue-200 bg-blue-50" : "border-slate-200"}`}>
+                      {[["EXW", q.exw], ["FOB", q.fob], ["CIF", q.cif]].map(([k, v]) => {
+                        const active = (ex.incoterm || "CIF") === k;
+                        return (
+                        <div key={k} className={`rounded-lg p-4 border ${active ? "border-blue-200 bg-blue-50" : "border-slate-200"}`}>
                           <div className="text-xs font-semibold text-slate-500">{k}</div>
-                          <div className={`text-lg font-bold mt-1 ${i === 2 ? "text-blue-700" : "text-slate-900"}`}>
+                          <div className={`text-lg font-bold mt-1 ${active ? "text-blue-700" : "text-slate-900"}`}>
                             {v.toLocaleString()}
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                     <div className="mt-3 rounded-lg border border-slate-200 divide-y divide-slate-100 text-xs">
                       {[["Unit cost", q.cost], ["Freight", q.freight],
@@ -601,6 +615,12 @@ function Quotations() {
   async function recalc(quoteNo) {
     await recalcQuote(quoteNo);
     load();
+  }
+  const [draftMsg, setDraftMsg] = React.useState(null);
+  async function makeDraft(quoteNo) {
+    const r = await generateDraft(quoteNo);
+    if (r.ok) setDraftMsg("Draft created. Check the Drafts page.");
+    else setDraftMsg(r.error || "Failed.");
   }
 
   const stint = (s) => ({
@@ -648,10 +668,16 @@ function Quotations() {
       {open && (
         <Card title={`Price breakdown — ${open.quote_no}`}
           action={
-            <button onClick={() => recalc(open.quote_no)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700">
-              <RefreshCw size={14} /> Recalculate
-            </button>
+            <div className="flex gap-2">
+              <button onClick={() => recalc(open.quote_no)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50">
+                <RefreshCw size={14} /> Recalculate
+              </button>
+              <button onClick={() => makeDraft(open.quote_no)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700">
+                <FileText size={14} /> Generate draft
+              </button>
+            </div>
           }>
           <div className="px-6 pb-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
@@ -1067,7 +1093,12 @@ export default function App() {
     rate: "29.6", margin: "20", currency: "USD", validity: "30",
     freight: "350", insurance: "80", localCharges: "120", bank: "35",
   });
-
+  const [stats, setStats] = useState(null);
+  React.useEffect(() => { getStats().then(setStats).catch(() => {}); }, [page]);
+  const badges = {
+    inbox: stats?.unread || 0,
+    drafts: stats?.pending_drafts || 0,
+  };
   const go = (p, id) => { setPage(p); if (id) setSelected(id); setNavOpen(false); };
   const title = NAV.find((n) => n.key === page)?.label ?? "";
 
@@ -1109,9 +1140,9 @@ export default function App() {
                   ${on ? "bg-blue-600 text-white" : "text-slate-300 hover:bg-white/5 hover:text-white"}`}>
                 <Icon size={18} className="shrink-0" />
                 <span className="flex-1 text-left">{label}</span>
-                {badge && (
+                {badges[key] > 0 && (
                   <span className={`px-2 py-0.5 rounded-full text-xs font-semibold
-                    ${on ? "bg-white/20 text-white" : "bg-blue-600 text-white"}`}>{badge}</span>
+                    ${on ? "bg-white/20 text-white" : "bg-blue-600 text-white"}`}>{badges[key]}</span>
                 )}
               </button>
             );
@@ -1127,10 +1158,6 @@ export default function App() {
         <header className="h-20 bg-white border-b border-slate-200 flex items-center px-5 lg:px-8 gap-4 shrink-0">
           <button onClick={() => setNavOpen(true)} className="lg:hidden text-slate-600"><Menu size={22} /></button>
           <h1 className="text-lg font-semibold text-slate-900 flex-1">{title}</h1>
-          <button className="relative text-slate-500 hover:text-slate-700">
-            <Bell size={20} />
-            <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-500 text-white text-[10px] grid place-items-center font-semibold">3</span>
-          </button>
           <div className="flex items-center gap-2.5 pl-4 border-l border-slate-200">
             <div className="w-9 h-9 rounded-full bg-slate-200 grid place-items-center text-slate-500 text-sm font-semibold">A</div>
             <div className="hidden sm:block">
