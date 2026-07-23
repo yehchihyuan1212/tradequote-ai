@@ -399,7 +399,10 @@ def sync_inbox(query: str = "from:chris990246@gmail.com", limit: int = 20,
         email.customer_id = cust.id
 
         inq = Inquiry(
-            email_id=email.id, intent=r.get("intent", "other"),
+            email_id=email.id,
+            intent=(r.get("intent") if r.get("intent") in
+                    {"quotation", "sample_request", "delivery_followup",
+                     "after_sales", "payment", "other"} else "other"),
             confidence=r.get("confidence", 0), company=r.get("company"),
             contact=r.get("contact"), product_text=r.get("product"),
             quantity=r.get("quantity"), destination=r.get("destination"),

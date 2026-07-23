@@ -464,6 +464,13 @@ function AIReview({ selected }) {
     setEBody(data.draft.body);
     setEditing(true);
   }
+  async function saveEdit() {
+    setWorking(true);
+    await saveDraft(data.draft.id, eSubject, eBody);
+    setEditing(false);
+    loadDetail(id);
+    setWorking(false);
+  }
 
 async function regenerate() {
     if (!window.confirm("This replaces the draft with a fresh version from the current quotation. Any edits you made will be lost.")) return;

@@ -47,6 +47,8 @@ def next_quote_no(db):
     n = db.query(Quotation).count() + 1
     return f"Q-2026-{n:03d}"
 
+VALID_INTENTS = {"quotation", "sample_request", "delivery_followup",
+                 "after_sales", "payment", "other"}
 
 def ingest(query="is:unread", limit=20):
     init_db()
@@ -87,7 +89,7 @@ def ingest(query="is:unread", limit=20):
 
         inq = Inquiry(
             email_id=email.id,
-            intent=r.get("intent", "other"),
+            intent=(r.get("intent") if r.get("intent") in VALID_INTENTS else "other"),
             confidence=r.get("confidence", 0),
             company=r.get("company"),
             contact=r.get("contact"),
