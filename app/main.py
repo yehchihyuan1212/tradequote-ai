@@ -672,8 +672,10 @@ def regenerate_draft(draft_id: int, db: Session = Depends(get_db)):
 
 TEMPLATES = {
     "sample_request": lambda i: compose_sample_reply(i.contact, i.product_text, i.quantity),
-    "delivery_followup": lambda i: compose_delivery_reply(i.contact, i.product_text),    "delivery_followup": lambda i: compose_delivery_reply(i.contact, None),    "after_sales": lambda i: compose_after_sales_reply(i.contact, i.product_text, i.quantity),
+    "delivery_followup": lambda i: compose_delivery_reply(i.contact, None),
+    "after_sales": lambda i: compose_after_sales_reply(i.contact, i.product_text, i.quantity),
     "payment": lambda i: compose_payment_reply(i.contact, None),
+}
 
 
 @app.post("/api/inbox/{message_id}/reply")
