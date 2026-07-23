@@ -11,6 +11,12 @@ from datetime import datetime
 from app.models import Customer, Draft, Email, Inquiry, PriceSetting, Product, Quotation
 from app.services.gmail_service import create_draft
 from app.services.draft_service import compose_quotation_reply
+from app.services.draft_service import (compose_quotation_reply,
+                                        compose_sample_reply,
+                                        compose_delivery_reply,
+                                        compose_after_sales_reply,
+                                        compose_payment_reply,
+                                        compose_blank_reply)
 
 app = FastAPI(title="TradeQuote AI")
 
@@ -42,8 +48,13 @@ def root():
 
 
 @app.get("/api/inbox")
-def inbox(db: Session = Depends(get_db)):
-    rows = db.query(Email).order_by(Email.id.desc()).all()
+def inbox(archived: bool = False, db: Session = Depends(get_db)):
+    q = db.query(Email)
+    if archived:
+        q = q.filter(Email.archived_at.isnot(None))
+    else:
+        q = q.filter(Email.archived_at.is_(None))
+    rows = q.order_by(Email.id.desc()).all()
     return [{
         "message_id": e.message_id,
         "received": e.received_at,
@@ -55,6 +66,7 @@ def inbox(db: Session = Depends(get_db)):
         "confidence": e.inquiry.confidence if e.inquiry else None,
         "status": _status(e),
         "viewed": e.viewed_at is not None,
+        
     } for e in rows]
 
 
@@ -112,7 +124,8 @@ def stats(db: Session = Depends(get_db)):
         "analysed": db.query(Inquiry).count(),
         "quotations": db.query(Quotation).count(),
         "customers": db.query(Customer).count(),
-        "unread": db.query(Email).filter(Email.viewed_at.is_(None)).count(),
+        "unread": db.query(Email).filter(
+            Email.viewed_at.is_(None), Email.archived_at.is_(None)).count(),
         "pending_drafts": db.query(Draft).filter(Draft.status == "draft").count(),
         "intent_distribution": dist,
     }
@@ -278,6 +291,15 @@ def send_to_gmail(draft_id: int, db: Session = Depends(get_db)):
     d.status = "sent"
     if d.inquiry.quotation:
         d.inquiry.quotation.draft_id = gmail_id
+        d.gmail_draft_id = gmail_id
+    d.status = "sent"
+    if d.inquiry.quotation:
+        d.inquiry.quotation.draft_id = gmail_id
+    d.inquiry.status = "sent"
+    if d.inquiry.email:
+        d.inquiry.email.archived_at = datetime.now()
+    db.commit()
+    return {"ok": True, "gmail_draft_id": gmail_id}
     db.commit()
     return {"ok": True, "gmail_draft_id": gmail_id}  
 @app.post("/api/quotations/{quote_no}/recalculate")
@@ -645,5 +667,65 @@ def regenerate_draft(draft_id: int, db: Session = Depends(get_db)):
         qty=q.quantity, dest=q.destination, cif=q.cif, unit_cif=q.unit_cif,
         moq=q.product.moq, lead_days=q.product.lead_days,
     )
+    db.commit()
+    return {"ok": True}
+
+TEMPLATES = {
+    "sample_request": lambda i: compose_sample_reply(i.contact, i.product_text, i.quantity),
+    "delivery_followup": lambda i: compose_delivery_reply(i.contact, i.product_text),
+    "after_sales": lambda i: compose_after_sales_reply(i.contact, i.product_text, i.quantity),
+    "payment": lambda i: compose_payment_reply(i.contact, i.summary and i.summary[:60]),
+}
+
+
+@app.post("/api/inbox/{message_id}/reply")
+def reply_from_email(message_id: str, mode: str = "template",
+                     db: Session = Depends(get_db)):
+    """為非報價信產生草稿。mode = template | blank"""
+    from app.models import Draft
+
+    e = db.query(Email).filter_by(message_id=message_id).first()
+    if not e or not e.inquiry:
+        return {"error": "Email not analysed yet"}
+
+    i = e.inquiry
+    existing = db.query(Draft).filter_by(inquiry_id=i.id).first()
+    if existing:
+        return {"ok": True, "draft_id": existing.id, "existing": True}
+
+    if mode == "blank":
+        body = compose_blank_reply(i.contact)
+    else:
+        maker = TEMPLATES.get(i.intent)
+        body = maker(i) if maker else compose_blank_reply(i.contact)
+
+    d = Draft(
+        inquiry_id=i.id,
+        to_email=e.sender_email,
+        subject="Re: " + (e.subject or "Your enquiry"),
+        body=body,
+    )
+    db.add(d)
+    i.status = "drafted"
+    db.commit()
+    return {"ok": True, "draft_id": d.id}
+
+
+@app.post("/api/inbox/{message_id}/archive")
+def archive_email(message_id: str, db: Session = Depends(get_db)):
+    e = db.query(Email).filter_by(message_id=message_id).first()
+    if not e:
+        return {"error": "Not found"}
+    e.archived_at = datetime.now()
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/inbox/{message_id}/unarchive")
+def unarchive_email(message_id: str, db: Session = Depends(get_db)):
+    e = db.query(Email).filter_by(message_id=message_id).first()
+    if not e:
+        return {"error": "Not found"}
+    e.archived_at = None
     db.commit()
     return {"ok": True}

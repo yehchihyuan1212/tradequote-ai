@@ -12,7 +12,7 @@ import {
 
 import { getInbox, getEmail, getStats, getProducts, getQuotations, getCustomers,
          markViewed, getSettings, getFreight, saveSettings,
-         getDrafts, generateDraft, saveDraft, sendDraftToGmail, recalcQuote,syncInbox, getReports, getSystemInfo, quoteFromEmail, draftFromEmail, regenerateDraft } from "./api";
+         getDrafts, generateDraft, saveDraft, sendDraftToGmail, recalcQuote,syncInbox, getReports, getSystemInfo, quoteFromEmail, draftFromEmail, regenerateDraft, getInboxArchived, replyFromEmail, archiveEmail, unarchiveEmail } from "./api";
 
 /* ---------------- mock data ---------------- */
 
@@ -454,6 +454,7 @@ function AIReview({ selected }) {
   const [working, setWorking] = React.useState(false);
   const [msg, setMsg] = React.useState(null);
   const [filter, setFilter] = React.useState("all");
+  const [showArchived, setShowArchived] = React.useState(false);
     const [editing, setEditing] = React.useState(false);
   const [eSubject, setESubject] = React.useState("");
   const [eBody, setEBody] = React.useState("");
@@ -472,13 +473,37 @@ async function regenerate() {
     else { setMsg("Draft rewritten from the current quotation."); loadDetail(id); }
     setWorking(false);
   }
+async function makeReply(mode) {
+    setWorking(true);
+    const r = await replyFromEmail(id, mode);
+    if (r.error) setMsg(r.error);
+    else { loadDetail(id); loadList(); }
+    setWorking(false);
+  }
 
+  async function archive() {
+    setWorking(true);
+    await archiveEmail(id);
+    loadList();
+    setWorking(false);
+  }
+
+  async function unarchive() {
+    setWorking(true);
+    await unarchiveEmail(id);
+    loadList();
+    setWorking(false);
+  }
   const loadList = React.useCallback(() => {
-    getInbox().then((d) => {
+    const fetcher = showArchived ? getInboxArchived : getInbox;
+    fetcher().then((d) => {
       setList(d);
-      setId((cur) => cur || (d.length ? d[0].message_id : null));
+      setId((cur) => {
+        if (cur && d.some((x) => x.message_id === cur)) return cur;
+        return d.length ? d[0].message_id : null;
+      });
     }).catch(() => {});
-  }, []);
+  }, [showArchived]);
 
   React.useEffect(loadList, [loadList]);
 
@@ -551,14 +576,30 @@ async function toGmail() {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-5 items-start">
       <Card title="Emails">
-        <div className="px-4 pb-3 flex gap-1.5">
-          {FILTERS.map(([k, lb]) => (
-            <button key={k} onClick={() => setFilter(k)}
-              className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors
-                ${filter === k ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
-              {lb}
+        <div className="px-4 pb-3 space-y-2">
+          <div className="flex gap-1.5">
+            <button onClick={() => setShowArchived(false)}
+              className={`flex-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors
+                ${!showArchived ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+              Active
             </button>
-          ))}
+            <button onClick={() => setShowArchived(true)}
+              className={`flex-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors
+                ${showArchived ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+              Archived
+            </button>
+          </div>
+          {!showArchived && (
+            <div className="flex gap-1.5">
+              {FILTERS.map(([k, lb]) => (
+                <button key={k} onClick={() => setFilter(k)}
+                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors
+                    ${filter === k ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+                  {lb}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         <div className="divide-y divide-slate-100 border-t border-slate-100 max-h-[70vh] overflow-y-auto">
           {shown.map((r) => (
@@ -619,11 +660,24 @@ async function toGmail() {
                   )}
                 </Step>
               )}
-
-              {ex && ex.intent !== "quotation" && (
-                <Step n="3" title="Next step">
-                  <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-sm text-slate-600">
-                    This is a {label(ex.intent).toLowerCase()} email — no pricing needed. Handle it directly in Gmail.
+              {ex && ex.intent !== "quotation" && !dr && (
+                <Step n="3" title="Reply">
+                  <p className="text-sm text-slate-600 mb-3">
+                    No pricing needed for a {label(ex.intent).toLowerCase()} email. Start from a template, or write your own.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button onClick={() => makeReply("template")} disabled={working}
+                      className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:bg-slate-300">
+                      <FileText size={15} /> {working ? "Writing…" : "Use template"}
+                    </button>
+                    <button onClick={() => makeReply("blank")} disabled={working}
+                      className="flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+                      <Pencil size={15} /> Blank draft
+                    </button>
+                    <button onClick={archive} disabled={working}
+                      className="flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-500 hover:bg-slate-50 disabled:opacity-50">
+                      <Check size={15} /> No reply needed
+                    </button>
                   </div>
                 </Step>
               )}
@@ -660,8 +714,8 @@ async function toGmail() {
                 </Step>
               )}
 
-              {q && (
-                <Step n="4" title="Draft reply">
+              {(q || dr) && (
+                <Step n={q ? "4" : "3"} title="Draft reply">
                   {!dr && (
                     <button onClick={makeDraft} disabled={working}
                       className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:bg-slate-300">
@@ -709,10 +763,10 @@ async function toGmail() {
                               className="flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50">
                               <Pencil size={15} /> Edit
                             </button>
-                            <button onClick={regenerate} disabled={working}
+                            {q && <button onClick={regenerate} disabled={working}
                               className="flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">
                               <RefreshCw size={15} /> Reset to quotation
-                            </button>
+                            </button>}
                             <button onClick={toGmail} disabled={working}
                               className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:bg-slate-300">
                               <ExternalLink size={15} /> {working ? "Sending…" : dr.status === "sent" ? "Send to Gmail again" : "Send to Gmail"}
@@ -739,6 +793,7 @@ async function toGmail() {
               )}
             </>
           )}
+
         </div>
       </Card>
     </div>

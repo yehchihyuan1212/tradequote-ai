@@ -75,3 +75,19 @@ export async function regenerateDraft(draftId) {
   const r = await fetch(`${BASE}/drafts/${draftId}/regenerate`, { method: "POST" });
   return r.json();
 }
+export const getInboxArchived = () => get("/inbox?archived=true");
+
+export async function replyFromEmail(messageId, mode = "template") {
+  const r = await fetch(`${BASE}/inbox/${messageId}/reply?mode=${mode}`, { method: "POST" });
+  return r.json();
+}
+
+export async function archiveEmail(messageId) {
+  const r = await fetch(`${BASE}/inbox/${messageId}/archive`, { method: "POST" });
+  return r.json();
+}
+
+export async function unarchiveEmail(messageId) {
+  const r = await fetch(`${BASE}/inbox/${messageId}/unarchive`, { method: "POST" });
+  return r.json();
+}
