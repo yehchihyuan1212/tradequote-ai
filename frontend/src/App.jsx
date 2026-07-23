@@ -12,7 +12,7 @@ import {
 
 import { getInbox, getEmail, getStats, getProducts, getQuotations, getCustomers,
          markViewed, getSettings, getFreight, saveSettings,
-         getDrafts, generateDraft, saveDraft, sendDraftToGmail, recalcQuote,syncInbox, getReports, getSystemInfo } from "./api";
+         getDrafts, generateDraft, saveDraft, sendDraftToGmail, recalcQuote,syncInbox, getReports, getSystemInfo, quoteFromEmail, draftFromEmail, regenerateDraft } from "./api";
 
 /* ---------------- mock data ---------------- */
 
@@ -437,25 +437,89 @@ function InboxPage({ go }) {
     </Card>
   );
 }
-
+const Step = ({ n, title, children, first }) => (
+    <div className={first ? "" : "border-t border-slate-100 pt-5 mt-5"}>
+      <div className="flex items-center gap-2 mb-3">
+        <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-500 text-[11px] font-semibold grid place-items-center">{n}</span>
+        <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{title}</span>
+      </div>
+      {children}
+    </div>
+);
 function AIReview({ selected }) {
   const [list, setList] = React.useState([]);
   const [id, setId] = React.useState(selected);
   const [data, setData] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
+  const [working, setWorking] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);
+  const [filter, setFilter] = React.useState("all");
+    const [editing, setEditing] = React.useState(false);
+  const [eSubject, setESubject] = React.useState("");
+  const [eBody, setEBody] = React.useState("");
 
-  React.useEffect(() => {
+  function startEdit() {
+    setESubject(data.draft.subject);
+    setEBody(data.draft.body);
+    setEditing(true);
+  }
+
+async function regenerate() {
+    if (!window.confirm("This replaces the draft with a fresh version from the current quotation. Any edits you made will be lost.")) return;
+    setWorking(true);
+    const r = await regenerateDraft(data.draft.id);
+    if (r.error) setMsg(r.error);
+    else { setMsg("Draft rewritten from the current quotation."); loadDetail(id); }
+    setWorking(false);
+  }
+
+  const loadList = React.useCallback(() => {
     getInbox().then((d) => {
       setList(d);
-      if (!id && d.length) setId(d[0].message_id);
+      setId((cur) => cur || (d.length ? d[0].message_id : null));
     }).catch(() => {});
   }, []);
 
-  React.useEffect(() => {
-    if (!id) return;
+  React.useEffect(loadList, [loadList]);
+
+  const loadDetail = React.useCallback((mid) => {
+    if (!mid) return;
     setBusy(true);
-    getEmail(id).then(setData).catch(() => setData(null)).finally(() => setBusy(false));
-  }, [id]);
+    setMsg(null);
+    getEmail(mid).then(setData).catch(() => setData(null)).finally(() => setBusy(false));
+  }, []);
+
+React.useEffect(() => { setEditing(false); loadDetail(id); }, [id, loadDetail]);
+
+  async function makeQuote() {
+    setWorking(true);
+    const r = await quoteFromEmail(id);
+    if (r.error) setMsg(r.error);
+    else { loadDetail(id); loadList(); }
+    setWorking(false);
+  }
+
+  async function makeDraft() {
+    setWorking(true);
+    const r = await draftFromEmail(id);
+    if (r.error) setMsg(r.error);
+    else { loadDetail(id); loadList(); }
+    setWorking(false);
+  }
+
+async function toGmail() {
+    setWorking(true);
+    const r = await sendDraftToGmail(data.draft.id);
+    if (r.error) {
+      setMsg(r.error);
+    } else {
+      loadDetail(id);
+      if (r.gmail_draft_id) {
+        window.open(`https://mail.google.com/mail/u/0/#drafts?compose=${r.gmail_draft_id}`, "_blank");
+      }
+    }
+    setWorking(false);
+  }
 
   const label = (i) => i ? i.split("_").map(w => w[0].toUpperCase() + w.slice(1)).join(" ") : "—";
   const tint = (i) => ({
@@ -466,138 +530,217 @@ function AIReview({ selected }) {
     payment: "bg-amber-50 text-amber-700",
   }[i] || "bg-slate-100 text-slate-600");
 
+  const FILTERS = [
+    ["all", "All"],
+    ["quotation", "Quotation"],
+    ["todo", "Needs action"],
+  ];
+  const shown = list.filter((r) => {
+    if (filter === "all") return true;
+    if (filter === "quotation") return r.intent === "quotation";
+    if (filter === "todo") return r.status !== "Drafted" && r.status !== "Sent";
+    return true;
+  });
+
   const ex = data?.extracted;
   const q = data?.quote;
+  const dr = data?.draft;
+
+
 
   return (
-    <div className="space-y-5">
-      <Card title="Analysis queue">
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="border-y border-slate-100">
-              <tr><Th>From</Th><Th>Subject</Th><Th>Intent</Th><Th>Confidence</Th><Th>Status</Th></tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {list.map((r) => (
-                <tr key={r.message_id} onClick={() => setId(r.message_id)}
-                  className={`cursor-pointer hover:bg-slate-50 ${r.message_id === id ? "bg-blue-50/50" : ""}`}>
-                  <Td className="font-medium text-slate-900">{r.company}</Td>
-                  <Td className="max-w-xs truncate">{r.subject}</Td>
-                  <Td><Badge cls={tint(r.intent)}>{label(r.intent)}</Badge></Td>
-                  <Td>
-                    <div className="flex items-center gap-2">
-                      <div className="w-16 h-1.5 rounded-full bg-slate-100 overflow-hidden">
-                        <div className="h-full rounded-full bg-blue-500" style={{ width: `${r.confidence || 0}%` }} />
-                      </div>
-                      <span className="text-xs font-medium text-slate-600">{r.confidence ?? "—"}%</span>
-                    </div>
-                  </Td>
-                  <Td><Badge cls={r.status === "Pending" ? "bg-slate-100 text-slate-600" : "bg-green-50 text-green-700"}>{r.status}</Badge></Td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+    <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-5 items-start">
+      <Card title="Emails">
+        <div className="px-4 pb-3 flex gap-1.5">
+          {FILTERS.map(([k, lb]) => (
+            <button key={k} onClick={() => setFilter(k)}
+              className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors
+                ${filter === k ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+              {lb}
+            </button>
+          ))}
+        </div>
+        <div className="divide-y divide-slate-100 border-t border-slate-100 max-h-[70vh] overflow-y-auto">
+          {shown.map((r) => (
+            <button key={r.message_id} onClick={() => setId(r.message_id)}
+              className={`w-full text-left px-4 py-3 hover:bg-slate-50 transition-colors
+                ${r.message_id === id ? "bg-blue-50/70" : ""}`}>
+              <div className="text-sm font-medium text-slate-900 truncate">{r.company || r.email}</div>
+              <div className="text-xs text-slate-500 truncate mt-0.5">{r.subject}</div>
+              <div className="flex items-center gap-1.5 mt-1.5">
+                <Badge cls={tint(r.intent)}>{label(r.intent)}</Badge>
+                {r.status === "Drafted" && <span className="text-[10px] text-amber-600 font-medium">drafted</span>}
+                {r.status === "Quoted" && <span className="text-[10px] text-blue-600 font-medium">quoted</span>}
+              </div>
+            </button>
+          ))}
+          {shown.length === 0 && (
+            <div className="py-12 text-center text-sm text-slate-400 px-4">Nothing matches this filter.</div>
+          )}
         </div>
       </Card>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <Card title="Original email">
-          <div className="px-6 pb-6">
-            {busy && <div className="py-16 text-center text-sm text-slate-400">Loading…</div>}
-            {data?.email && (
-              <>
-                <div className="pb-4 mb-4 border-b border-slate-100 space-y-1">
-                  <div className="text-sm font-semibold text-slate-900">{data.email.subject}</div>
-                  <div className="text-xs text-slate-500">
-                    {data.email.sender_name} &lt;{data.email.sender_email}&gt;
-                  </div>
-                  <div className="text-xs text-slate-400">{data.email.received}</div>
+      <Card title={data?.email?.subject || "Select an email"}>
+        <div className="px-6 pb-6">
+          {busy && <div className="py-16 text-center text-sm text-slate-400">Loading…</div>}
+
+          {!busy && data?.email && (
+            <>
+              <Step n="1" title="Original email" first>
+                <div className="text-xs text-slate-500 mb-3">
+                  {data.email.sender_name} &lt;{data.email.sender_email}&gt; · {data.email.received}
                 </div>
                 <pre className="text-sm text-slate-700 whitespace-pre-wrap font-sans leading-relaxed">
                   {data.email.body}
                 </pre>
-              </>
-            )}
-          </div>
-        </Card>
+              </Step>
 
-        <Card title="Extraction and pricing">
-          <div className="px-6 pb-6">
-            {busy && <div className="py-16 text-center text-sm text-slate-400">Loading…</div>}
-
-            {ex && (
-              <div className="space-y-5">
-                <div className="flex items-center justify-between p-4 rounded-lg bg-slate-50">
-                  <div>
-                    <div className="text-xs text-slate-500 mb-1">Detected intent</div>
+              {ex && (
+                <Step n="2" title="AI extraction">
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-slate-50 mb-4">
                     <Badge cls={tint(ex.intent)}>{label(ex.intent)}</Badge>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-xs text-slate-500 mb-1">Confidence</div>
-                    <div className="text-lg font-bold text-slate-900">{ex.confidence}%</div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-x-4 gap-y-3">
-                  {[["Company", ex.company], ["Contact", ex.contact],
-                    ["Product", ex.product], ["Quantity", ex.quantity?.toLocaleString()],
-                    ["Destination", ex.destination], ["Incoterm", ex.incoterm]].map(([k, v]) => (
-                    <div key={k}>
-                      <div className="text-xs text-slate-400">{k}</div>
-                      <div className="text-sm font-medium text-slate-900">{v ?? "—"}</div>
+                    <div className="text-sm">
+                      <span className="text-slate-400 text-xs mr-2">confidence</span>
+                      <span className="font-bold text-slate-900">{ex.confidence}%</span>
                     </div>
-                  ))}
-                </div>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3">
+                    {[["Company", ex.company], ["Contact", ex.contact],
+                      ["Product", ex.product], ["Quantity", ex.quantity?.toLocaleString()],
+                      ["Destination", ex.destination], ["Incoterm", ex.incoterm]].map(([k, v]) => (
+                      <div key={k}>
+                        <div className="text-xs text-slate-400">{k}</div>
+                        <div className="text-sm font-medium text-slate-900">{v ?? "—"}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {ex.summary && (
+                    <p className="text-sm text-slate-600 mt-4 leading-relaxed">{ex.summary}</p>
+                  )}
+                </Step>
+              )}
 
-                <div>
-                  <div className="text-xs font-semibold text-slate-500 mb-2">Summary</div>
-                  <p className="text-sm text-slate-700 leading-relaxed">{ex.summary}</p>
-                </div>
+              {ex && ex.intent !== "quotation" && (
+                <Step n="3" title="Next step">
+                  <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-sm text-slate-600">
+                    This is a {label(ex.intent).toLowerCase()} email — no pricing needed. Handle it directly in Gmail.
+                  </div>
+                </Step>
+              )}
 
-                {q ? (
-                  <div>
-                    <div className="text-xs font-semibold text-slate-500 mb-3">
-                      {q.quote_no} — matched SKU {q.sku}
-                    </div>
-                    <div className="grid grid-cols-3 gap-3">
-                      {[["EXW", q.exw], ["FOB", q.fob], ["CIF", q.cif]].map(([k, v]) => {
-                        const active = (ex.incoterm || "CIF") === k;
-                        return (
-                        <div key={k} className={`rounded-lg p-4 border ${active ? "border-blue-200 bg-blue-50" : "border-slate-200"}`}>
-                          <div className="text-xs font-semibold text-slate-500">{k}</div>
-                          <div className={`text-lg font-bold mt-1 ${active ? "text-blue-700" : "text-slate-900"}`}>
-                            {v.toLocaleString()}
+              {ex && ex.intent === "quotation" && (
+                <Step n="3" title="Quotation">
+                  {!q && (
+                    <button onClick={makeQuote} disabled={working}
+                      className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:bg-slate-300">
+                      <DollarSign size={15} /> {working ? "Calculating…" : "Generate quotation for this email"}
+                    </button>
+                  )}
+                  {q && (
+                    <>
+                      <div className="grid grid-cols-3 gap-3">
+                        {[["EXW", q.exw], ["FOB", q.fob], ["CIF", q.cif]].map(([k, v]) => {
+                          const on = (ex.incoterm || "CIF") === k;
+                          return (
+                            <div key={k} className={`rounded-lg p-4 border ${on ? "border-blue-300 border-2 bg-blue-50" : "border-slate-200"}`}>
+                              <div className="text-xs font-semibold text-slate-500">{k}</div>
+                              <div className={`text-lg font-bold mt-1 ${on ? "text-blue-700" : "text-slate-900"}`}>
+                                {v.toLocaleString()}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="text-xs text-slate-400 mt-2">
+                        {q.quote_no} · matched SKU {q.sku} · MOQ {q.moq?.toLocaleString()} pcs · {q.lead_days} days
+                        {ex.incoterm && ` · highlighted term is what the customer asked for`}
+                      </div>
+                    </>
+                  )}
+                </Step>
+              )}
+
+              {q && (
+                <Step n="4" title="Draft reply">
+                  {!dr && (
+                    <button onClick={makeDraft} disabled={working}
+                      className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:bg-slate-300">
+                      <FileText size={15} /> {working ? "Writing…" : "Generate draft from this quotation"}
+                    </button>
+                  )}
+{dr && (
+                    <>
+                      {editing ? (
+                        <>
+                          <div className="mb-2">
+                            <div className="text-xs text-slate-400 mb-1">Subject</div>
+                            <input value={eSubject} onChange={(e) => setESubject(e.target.value)}
+                              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm
+                                         focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500" />
                           </div>
-                        </div>
-                        );
-                      })}
-                    </div>
-                    <div className="mt-3 rounded-lg border border-slate-200 divide-y divide-slate-100 text-xs">
-                      {[["Unit cost", q.cost], ["Freight", q.freight],
-                        ["Margin applied", `${(q.margin * 100).toFixed(0)}%`],
-                        ["Unit CIF", q.unit_cif]].map(([k, v]) => (
-                        <div key={k} className="flex justify-between px-3 py-2">
-                          <span className="text-slate-500">{k}</span>
-                          <span className="font-medium text-slate-900 tabular-nums">
-                            {typeof v === "number" ? v.toLocaleString() : v}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                    <p className="text-xs text-slate-400 mt-3">
-                      Extracted by {ex.model} running locally. Prices computed in Python — the model never touches the arithmetic.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-600">
-                    Not a quotation request, so no pricing was calculated.
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </Card>
-      </div>
+                          <textarea value={eBody} onChange={(e) => setEBody(e.target.value)} rows={14}
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm leading-relaxed
+                                       focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500" />
+                          <div className="flex items-center gap-2 mt-3">
+                            <button onClick={saveEdit} disabled={working}
+                              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:bg-slate-300">
+                              <Check size={15} /> {working ? "Saving…" : "Save changes"}
+                            </button>
+                            <button onClick={() => setEditing(false)}
+                              className="px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-600 hover:bg-slate-50">
+                              Cancel
+                            </button>
+                          </div>
+                                                    <p className="text-xs text-slate-400 mt-2">
+                            Reset to quotation rewrites the draft from the latest prices — use it after recalculating.
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <div className="text-xs text-slate-500 mb-2">
+                            To {dr.to} · {dr.subject}
+                          </div>
+                          <pre className="text-sm text-slate-700 whitespace-pre-wrap font-sans leading-relaxed
+                                          border border-slate-200 rounded-lg p-4 bg-slate-50/50">
+                            {dr.body}
+                          </pre>
+                          <div className="flex items-center gap-2 mt-3">
+                            <button onClick={startEdit}
+                              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50">
+                              <Pencil size={15} /> Edit
+                            </button>
+                            <button onClick={regenerate} disabled={working}
+                              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+                              <RefreshCw size={15} /> Reset to quotation
+                            </button>
+                            <button onClick={toGmail} disabled={working}
+                              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:bg-slate-300">
+                              <ExternalLink size={15} /> {working ? "Sending…" : dr.status === "sent" ? "Send to Gmail again" : "Send to Gmail"}
+                            </button>
+                            {dr.status === "sent" && dr.gmail_draft_id && (
+                              <a href={`https://mail.google.com/mail/u/0/#drafts?compose=${dr.gmail_draft_id}`}
+                                target="_blank" rel="noopener noreferrer"
+                                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700">
+                                <ExternalLink size={15} /> Open in Gmail
+                              </a>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </>
+                  )}
+                </Step>
+              )}
+
+              {msg && (
+                <div className="mt-4 p-3 rounded-lg bg-amber-50 border border-amber-100 text-xs text-amber-800">
+                  {msg}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </Card>
     </div>
   );
 }

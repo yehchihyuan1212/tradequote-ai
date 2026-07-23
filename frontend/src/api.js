@@ -61,3 +61,17 @@ export async function syncInbox() {
 export const getReports = () => get("/reports");
 
 export const getSystemInfo = () => get("/system-info");
+
+export async function quoteFromEmail(messageId) {
+  const r = await fetch(`${BASE}/inbox/${messageId}/quote`, { method: "POST" });
+  return r.json();
+}
+
+export async function draftFromEmail(messageId) {
+  const r = await fetch(`${BASE}/inbox/${messageId}/draft`, { method: "POST" });
+  return r.json();
+}
+export async function regenerateDraft(draftId) {
+  const r = await fetch(`${BASE}/drafts/${draftId}/regenerate`, { method: "POST" });
+  return r.json();
+}

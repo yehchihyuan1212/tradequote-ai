@@ -68,7 +68,7 @@ def email_detail(message_id: str, db: Session = Depends(get_db)):
         "email": {"subject": e.subject, "body": e.body,
                   "sender_name": e.sender_name, "sender_email": e.sender_email,
                   "received": e.received_at},
-        "extracted": None, "quote": None,
+        "extracted": None, "quote": None, "draft": None,
     }
     if e.inquiry:
         i = e.inquiry
@@ -88,6 +88,16 @@ def email_detail(message_id: str, db: Session = Depends(get_db)):
                 "cost": q.cost, "exw": q.exw, "fob": q.fob,
                 "cif": q.cif, "unit_cif": q.unit_cif,
                 "margin": q.margin_used, "freight": q.freight_used,
+                "moq": q.product.moq, "lead_days": q.product.lead_days,
+            }
+
+        from app.models import Draft
+        d = db.query(Draft).filter_by(inquiry_id=i.id).first()
+        if d:
+            out["draft"] = {
+                "id": d.id, "to": d.to_email, "subject": d.subject,
+                "body": d.body, "status": d.status,
+                "gmail_draft_id": d.gmail_draft_id,
             }
     return out
 
@@ -520,3 +530,120 @@ def export_excel(db: Session = Depends(get_db)):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=tradequote_export.xlsx"},
     )
+    
+@app.post("/api/inbox/{message_id}/quote")
+def quote_from_email(message_id: str, db: Session = Depends(get_db)):
+    """對這封信產生報價。已有報價就直接回傳。"""
+    from app.services.pricing_service import PriceSettings, calculate
+
+    e = db.query(Email).filter_by(message_id=message_id).first()
+    if not e or not e.inquiry:
+        return {"error": "Email not analysed yet"}
+
+    i = e.inquiry
+    if i.quotation:
+        return {"ok": True, "quote_no": i.quotation.quote_no, "existing": True}
+
+    if i.intent != "quotation":
+        return {"error": "This email is not a quotation request"}
+
+    def match(text):
+        if not text:
+            return None
+        n = text.lower()
+        for p in db.query(Product).all():
+            names = [p.name.lower()]
+            if p.aliases:
+                names += [a.strip().lower() for a in p.aliases.split(",")]
+            if any(c in n or n in c for c in names):
+                return p
+        words = {w.strip("-,.").rstrip("s") for w in n.split()}
+        best, score = None, 0
+        for p in db.query(Product).all():
+            target = {w.rstrip("s") for w in p.name.lower().split()}
+            hits = len(words & target)
+            if hits > score:
+                best, score = p, hits
+        return best if score else None
+
+    p = match(i.product_text)
+    if not p:
+        return {"error": f"No product in the catalogue matches '{i.product_text}'"}
+
+    row = db.query(PriceSetting).first()
+    s = PriceSettings(
+        profit_margin=row.profit_margin, local_charges=row.local_charges,
+        insurance=row.insurance, bank_charges=row.bank_charges, usd_twd=row.usd_twd,
+    )
+    qty = i.quantity or p.moq
+    dest = i.destination or "Japan"
+    calc = calculate(p.unit_price, qty, dest, s)
+    n = db.query(Quotation).count() + 1
+
+    q = Quotation(
+        inquiry_id=i.id, quote_no=f"Q-2026-{n:03d}",
+        product_id=p.id, quantity=qty, destination=calc["destination"],
+        cost=calc["cost"], exw=calc["exw"], fob=calc["fob"],
+        cif=calc["cif"], unit_cif=calc["unit_cif"],
+        margin_used=s.profit_margin, freight_used=calc["freight"],
+    )
+    db.add(q)
+    i.status = "quoted"
+    db.commit()
+    return {"ok": True, "quote_no": q.quote_no}
+
+
+@app.post("/api/inbox/{message_id}/draft")
+def draft_from_email(message_id: str, db: Session = Depends(get_db)):
+    """對這封信的報價產生草稿。"""
+    from app.models import Draft
+
+    e = db.query(Email).filter_by(message_id=message_id).first()
+    if not e or not e.inquiry:
+        return {"error": "Email not analysed yet"}
+
+    i = e.inquiry
+    existing = db.query(Draft).filter_by(inquiry_id=i.id).first()
+    if existing:
+        return {"ok": True, "draft_id": existing.id, "existing": True}
+
+    q = i.quotation
+    if not q:
+        return {"error": "Generate a quotation first"}
+
+    body = compose_quotation_reply(
+        contact=i.contact, product=q.product.name, sku=q.product.sku,
+        qty=q.quantity, dest=q.destination, cif=q.cif, unit_cif=q.unit_cif,
+        moq=q.product.moq, lead_days=q.product.lead_days,
+    )
+    d = Draft(
+        quotation_id=q.id, inquiry_id=i.id,
+        to_email=e.sender_email,
+        subject="Re: " + (e.subject or "Your inquiry"),
+        body=body,
+    )
+    db.add(d)
+    i.status = "drafted"
+    db.commit()
+    return {"ok": True, "draft_id": d.id}
+@app.post("/api/drafts/{draft_id}/regenerate")
+def regenerate_draft(draft_id: int, db: Session = Depends(get_db)):
+    """用目前的報價重新產生草稿內容（覆蓋原本的）。"""
+    from app.models import Draft
+
+    d = db.query(Draft).filter_by(id=draft_id).first()
+    if not d:
+        return {"error": "Not found"}
+
+    i = d.inquiry
+    q = i.quotation
+    if not q:
+        return {"error": "No quotation attached to this draft"}
+
+    d.body = compose_quotation_reply(
+        contact=i.contact, product=q.product.name, sku=q.product.sku,
+        qty=q.quantity, dest=q.destination, cif=q.cif, unit_cif=q.unit_cif,
+        moq=q.product.moq, lead_days=q.product.lead_days,
+    )
+    db.commit()
+    return {"ok": True}
