@@ -904,6 +904,7 @@ function Quotations() {
 function Drafts() {
   const [rows, setRows] = React.useState([]);
   const [sel, setSel] = React.useState(null);
+  const [tab, setTab] = React.useState("draft");
   const [editing, setEditing] = React.useState(false);
   const [subject, setSubject] = React.useState("");
   const [body, setBody] = React.useState("");
@@ -917,6 +918,17 @@ function Drafts() {
   }, [sel]);
 
   React.useEffect(() => { load(); }, []);
+
+  React.useEffect(() => {
+    if (shown.length && !shown.some((d) => d.id === sel?.id)) pick(shown[0]);
+    if (!shown.length) setSel(null);
+  }, [tab, rows]);
+
+  const shown = rows.filter((d) => tab === "draft" ? d.status !== "sent" : d.status === "sent");
+  const counts = {
+    draft: rows.filter((d) => d.status !== "sent").length,
+    sent: rows.filter((d) => d.status === "sent").length,
+  };
 
   function pick(d) {
     setSel(d);
@@ -947,8 +959,17 @@ function Drafts() {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
       <Card title="Drafts" className="lg:col-span-1">
-        <div className="divide-y divide-slate-100">
-          {rows.map((d) => (
+        <div className="px-4 pb-3 flex gap-1.5">
+          {[["draft", "Pending", counts.draft], ["sent", "In Gmail", counts.sent]].map(([k, lb, n]) => (
+            <button key={k} onClick={() => setTab(k)}
+              className={`flex-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors
+                ${tab === k ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+              {lb} {n > 0 && <span className="opacity-60">({n})</span>}
+            </button>
+          ))}
+        </div>
+        <div className="divide-y divide-slate-100 border-t border-slate-100">
+          {shown.map((d) => (
             <button key={d.id} onClick={() => pick(d)}
               className={`w-full text-left px-6 py-4 hover:bg-slate-50 ${sel?.id === d.id ? "bg-blue-50/60" : ""}`}>
               <div className="flex items-center justify-between gap-2">
@@ -961,9 +982,11 @@ function Drafts() {
             </button>
           ))}
         </div>
-        {rows.length === 0 && (
+        {shown.length === 0 && (
           <div className="py-16 text-center text-sm text-slate-400 px-6">
-            No drafts yet. Generate one from a quotation in the Quotations page.
+            {tab === "draft"
+              ? "No pending drafts. Generate one from AI Review."
+              : "Nothing sent to Gmail yet."}
           </div>
         )}
       </Card>
