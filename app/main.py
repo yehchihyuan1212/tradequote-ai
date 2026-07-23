@@ -59,7 +59,8 @@ def inbox(archived: bool = False, db: Session = Depends(get_db)):
         "message_id": e.message_id,
         "received": e.received_at,
         "company": (e.inquiry.company if e.inquiry and e.inquiry.company
-                    else e.sender_name),
+                    else (e.inquiry.contact if e.inquiry and e.inquiry.contact
+                             else e.sender_email)),
         "email": e.sender_email,
         "subject": e.subject,
         "intent": e.inquiry.intent if e.inquiry else None,
