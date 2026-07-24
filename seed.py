@@ -31,8 +31,18 @@ if db.query(Freight).count() == 0:
         Freight(destination="Japan", port="Osaka", cost_usd=350, transit_days=5),
         Freight(destination="Korea", port="Busan", cost_usd=300, transit_days=4),
         Freight(destination="Hong Kong", port="Hong Kong", cost_usd=180, transit_days=2),
+        Freight(destination="China", port="Shanghai", cost_usd=220, transit_days=3),
+        Freight(destination="Singapore", port="Singapore", cost_usd=380, transit_days=6),
         Freight(destination="UAE", port="Jebel Ali", cost_usd=980, transit_days=18),
+        Freight(destination="Australia", port="Sydney", cost_usd=1250, transit_days=18),
+        Freight(destination="Egypt", port="Alexandria", cost_usd=1420, transit_days=26),
         Freight(destination="Mexico", port="Manzanillo", cost_usd=1450, transit_days=24),
+        Freight(destination="Germany", port="Hamburg", cost_usd=1680, transit_days=32),
+        Freight(destination="Netherlands", port="Rotterdam", cost_usd=1650, transit_days=31),
+        Freight(destination="Italy", port="Genoa", cost_usd=1580, transit_days=28),
+        Freight(destination="Poland", port="Gdansk", cost_usd=1720, transit_days=33),
+        Freight(destination="USA", port="Los Angeles", cost_usd=1150, transit_days=16),
+        Freight(destination="Brazil", port="Santos", cost_usd=1890, transit_days=35),
     ])
 
 db.commit()

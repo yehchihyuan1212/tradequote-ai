@@ -1,5 +1,5 @@
 from app.database import SessionLocal, init_db
-from app.models import Customer, Email, Inquiry, PriceSetting, Product, Quotation
+from app.models import Customer, Email, Freight, Inquiry, PriceSetting, Product, Quotation
 from app.services.ai_service import MODEL, analyse
 from app.services.gmail_service import fetch_new
 from app.services.pricing_service import PriceSettings, calculate
@@ -137,7 +137,7 @@ def ingest(query="is:unread", limit=20):
             if p:
                 qty = inq.quantity or p.moq
                 dest = inq.destination or "Japan"
-                calc = calculate(p.unit_price, qty, dest, s)
+                calc = calculate(p.unit_price, qty, dest, s, {f.destination: f.cost_usd for f in db.query(Freight).all()})
                 db.add(Quotation(
                     inquiry_id=inq.id,
                     quote_no=next_quote_no(db),

@@ -3,7 +3,6 @@
 
 @dataclass
 class PriceSettings:
-    """從 price_settings 資料表讀出來的公司設定"""
     profit_margin: float = 0.20
     local_charges: float = 120.0
     insurance: float = 80.0
@@ -11,26 +10,51 @@ class PriceSettings:
     usd_twd: float = 29.6
 
 
-FREIGHT_TABLE = {
-    "Japan": 350.0,
-    "Korea": 300.0,
-    "Hong Kong": 180.0,
-    "UAE": 980.0,
-    "Mexico": 1450.0,
+DEFAULT_FREIGHT = 500.0
+
+PORT_TO_COUNTRY = {
+    "osaka": "Japan", "tokyo": "Japan", "yokohama": "Japan", "kobe": "Japan",
+    "nagoya": "Japan",
+    "busan": "Korea", "incheon": "Korea", "seoul": "Korea",
+    "hong kong": "Hong Kong",
+    "jebel ali": "UAE", "dubai": "UAE", "abu dhabi": "UAE",
+    "manzanillo": "Mexico", "veracruz": "Mexico", "mexico city": "Mexico",
+    "sydney": "Australia", "melbourne": "Australia", "brisbane": "Australia",
+    "hamburg": "Germany", "bremerhaven": "Germany",
+    "rotterdam": "Netherlands",
+    "alexandria": "Egypt", "port said": "Egypt", "cairo": "Egypt",
+    "singapore": "Singapore",
+    "shanghai": "China", "shenzhen": "China", "ningbo": "China",
+    "los angeles": "USA", "long beach": "USA", "new york": "USA",
+    "genoa": "Italy", "milan": "Italy",
+    "warsaw": "Poland", "gdansk": "Poland",
+    "santos": "Brazil", "sao paulo": "Brazil",
 }
 
 
-def calculate(unit_price: float, qty: int, destination: str,
-              s: PriceSettings) -> dict[str, float]:
-    """計算 EXW / FOB / CIF 三種貿易條件的報價。
+def normalise_destination(d):
+    """把城市或港口名換成國家名。"""
+    if not d:
+        return None
+    key = d.strip().lower()
+    return PORT_TO_COUNTRY.get(key, d.strip())
 
-    AI 不參與計算，所有數字都從設定表推導。
+
+def calculate(unit_price: float, qty: int, destination: str,
+              s: PriceSettings, freight_lookup=None) -> dict:
+    """計算 EXW / FOB / CIF。
+
+    freight_lookup: 可傳入一個 {國家: 運費} 的字典，通常來自資料庫。
+                    沒傳就用預設運費。
     """
     destination = normalise_destination(destination)
+
+    table = freight_lookup or {}
+    freight = table.get(destination, DEFAULT_FREIGHT)
+
     cost = unit_price * qty
     exw = cost / (1 - s.profit_margin)
     fob = exw + s.local_charges
-    freight = FREIGHT_TABLE.get(destination, 500.0)
     cif = fob + freight + s.insurance
 
     return {
@@ -42,21 +66,3 @@ def calculate(unit_price: float, qty: int, destination: str,
         "freight": freight,
         "destination": destination,
     }
-
-
-PORT_TO_COUNTRY = {
-    "osaka": "Japan", "tokyo": "Japan", "yokohama": "Japan", "kobe": "Japan",
-    "busan": "Korea", "incheon": "Korea",
-    "hong kong": "Hong Kong",
-    "jebel ali": "UAE", "dubai": "UAE",
-    "manzanillo": "Mexico", "veracruz": "Mexico",
-}
-
-
-def normalise_destination(d):
-    if not d:
-        return None
-    key = d.strip().lower()
-    if key in FREIGHT_TABLE or d in FREIGHT_TABLE:
-        return d
-    return PORT_TO_COUNTRY.get(key, d)

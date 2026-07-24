@@ -68,6 +68,11 @@ def _clean_company(v):
     v = _clean(v)
     return None if v and v.lower() in COUNTRIES else v
 
+def _freight_table(db):
+    """從資料庫讀運費表，回傳 {國家: 費用}。"""
+    from app.models import Freight
+    return {f.destination: f.cost_usd for f in db.query(Freight).all()}
+
 
 @app.get("/api/inbox")
 def inbox(archived: bool = False, db: Session = Depends(get_db)):
