@@ -3,7 +3,7 @@ import re
 
 import httpx
 
-MODEL = "qwen3.5:4b" # "qwen3.5:4b" or "qwen3.5:0.8b"
+MODEL = "qwen3.5:0.8b" # "qwen3.5:4b" or "qwen3.5:0.8b"
 OLLAMA = "http://localhost:11434/api/chat"
 
 SYSTEM = """You extract structured data from international trade emails.
@@ -12,7 +12,13 @@ Output ONE JSON object and nothing else. No markdown. No commentary.
 
 Schema:
 {
-"intent": "quotation" | "sample_request" | "delivery_followup" | "after_sales" | "payment" | "other",
+"intent": "quotation" | "sample_request" | "delivery_followup" | "after_sales" | "payment" | "other".
+  Use "other" whenever the email is NOT a genuine business enquiry from a trade customer:
+  personal messages between friends, dinner invitations, marketing or promotional emails,
+  newsletters, subscription notices, spam, or internal company notices.
+  A promotional email offering a discount is "other", not a quotation or sample request.
+  Only use the five business categories when a real customer is asking about your products,
+  orders, shipments, defects, or payments,
   "confidence": 0-100,
   "company": the customer's company name ONLY, never including a person's name. Look anywhere in the email - the opening line, the body, or the signature. "Kim's Electronics in Seoul, Korea here" means the company is "Kim's Electronics". In "Laura Diaz\nNext Step Inc." the company is "Next Step Inc.", not "Laura Diaz Next Step Inc.". Never put a country, city, or product name here - "Italy" or "Osaka" is not a company. Only use null when no company is named at all,
   "contact": the person's name ONLY, separate from the company,
@@ -34,8 +40,10 @@ Email: "Dear supplier, 12 of the 500 power banks do not charge. Replacement or r
 Output: {"intent":"after_sales","confidence":98,"company":"Next Step Inc.","contact":"Laura Diaz","product":"power banks","quantity":12,"destination":null,"incoterm":null,"summary":"Next Step Inc. reports 12 defective power banks and asks for replacement or refund."}
 
 Email: "Hi, could you send 10 USB cable samples to our office in Hamburg? We cover courier. Klaus Weber, Weber GmbH"
-Output: {"intent":"sample_request","confidence":95,"company":"Weber GmbH","contact":"Klaus Weber","product":"USB cable","quantity":10,"destination":"Germany","incoterm":null,"summary":"Weber GmbH requests 10 USB cable samples shipped to Hamburg at their own courier cost."}
+Output: {"intent":"other","confidence":95,"company":null,"contact":"Chris","product":null,"quantity":null,"destination":null,"incoterm":null,"summary":"A personal dinner invitation, unrelated to business."}
 
+Email: "Limited time offer - 50% off business software. Upgrade your workflow today! Click here to claim your discount. Unsubscribe anytime."
+Output: {"intent":"other","confidence":95,"company":null,"contact":null,"product":null,"quantity":null,"destination":null,"incoterm":null,"summary":"A marketing email promoting software, not a customer enquiry."}
 Email: "We remitted USD 5,440 for invoice INV-2026-118. Please confirm. Ahmed Hassan"
 Output: {"intent":"payment","confidence":95,"company":null,"contact":"Ahmed Hassan","product":null,"quantity":null,"destination":null,"incoterm":null,"summary":"Ahmed Hassan confirms a T/T payment of USD 5,440 for invoice INV-2026-118."}
 """
