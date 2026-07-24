@@ -3,7 +3,7 @@ import {
   Home, Inbox, Bot, DollarSign, Send, Users, Package,
   Wallet, BarChart3, Settings as Cog, Bell, ChevronDown,
   Menu, Search, ArrowLeft, Check, Pencil, ExternalLink,
-  RefreshCw, Mail, FileText, TrendingUp
+  RefreshCw, Mail, FileText, TrendingUp,Trash2
 } from "lucide-react";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -12,7 +12,7 @@ import {
 
 import { getInbox, getEmail, getStats, getProducts, getQuotations, getCustomers,
          markViewed, getSettings, getFreight, saveSettings,
-         getDrafts, generateDraft, saveDraft, sendDraftToGmail, recalcQuote,syncInbox, getReports, getSystemInfo, quoteFromEmail, draftFromEmail, regenerateDraft, getInboxArchived, replyFromEmail, archiveEmail, unarchiveEmail } from "./api";
+         getDrafts, generateDraft, saveDraft, sendDraftToGmail, recalcQuote,syncInbox, getReports, getSystemInfo, quoteFromEmail, draftFromEmail, regenerateDraft, getInboxArchived, replyFromEmail, archiveEmail, unarchiveEmail, getIrrelevant, purgeIrrelevant, keepEmail } from "./api";
 
 /* ---------------- mock data ---------------- */
 
@@ -328,6 +328,8 @@ function InboxPage({ go }) {
   const [q, setQ] = React.useState("");
   const [error, setError] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
+  const [tab, setTab] = React.useState("active");
+  const [irrelevant, setIrrelevant] = React.useState([]);
 
   const load = React.useCallback(() => {
     setLoading(true);
@@ -338,6 +340,24 @@ function InboxPage({ go }) {
   }, []);
 
   React.useEffect(load, [load]);
+  const loadIrrelevant = React.useCallback(() => {
+    getIrrelevant().then(setIrrelevant).catch(() => {});
+  }, []);
+
+  React.useEffect(loadIrrelevant, [loadIrrelevant]);
+
+  async function purgeAll() {
+    if (!window.confirm(`Delete ${irrelevant.length} irrelevant emails? They will not be re-imported.`)) return;
+    await purgeIrrelevant();
+    loadIrrelevant();
+    load();
+  }
+
+  async function keep(mid) {
+    await keepEmail(mid);
+    loadIrrelevant();
+    load();
+  }
   const [syncing, setSyncing] = React.useState(false);
   async function sync() {
     setSyncing(true);
@@ -369,6 +389,18 @@ function InboxPage({ go }) {
     <Card title="Inbox"
       action={
         <div className="flex items-center gap-2">
+          <div className="flex gap-1 mr-1">
+            <button onClick={() => setTab("active")}
+              className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors
+                ${tab === "active" ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+              Active
+            </button>
+            <button onClick={() => setTab("irrelevant")}
+              className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors
+                ${tab === "irrelevant" ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+              Irrelevant {irrelevant.length > 0 && <span className="opacity-60">({irrelevant.length})</span>}
+            </button>
+          </div>
           <div className="relative">
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search mail"
@@ -386,9 +418,53 @@ function InboxPage({ go }) {
         </div>
       }>
       {error && <div className="px-6 py-10 text-center text-sm text-red-600">{error}</div>}
-      {loading && !error && <div className="px-6 py-16 text-center text-sm text-slate-400">Loading…</div>}
+      {loading && !error && tab === "active" && <div className="px-6 py-16 text-center text-sm text-slate-400">Loading…</div>}
 
-      {!loading && !error && (
+      {tab === "irrelevant" && (
+        <>
+          <div className="px-6 py-3 border-b border-slate-100 flex items-center justify-between">
+            <p className="text-xs text-slate-500">
+              Emails the model judged unrelated to trade business. Review before deleting.
+            </p>
+            {irrelevant.length > 0 && (
+              <button onClick={purgeAll}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 text-white text-xs font-medium hover:bg-red-700 shrink-0">
+                <Trash2 size={13} /> Delete all ({irrelevant.length})
+              </button>
+            )}
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="border-b border-slate-100">
+                <tr><Th>Received</Th><Th>From</Th><Th>Subject</Th><Th>Why</Th><Th /></tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {irrelevant.map((r) => (
+                  <tr key={r.message_id} className="hover:bg-slate-50">
+                    <Td className="text-slate-500 whitespace-nowrap text-xs">
+                      {(r.received || "").replace(/ \+\d{4}$/, "")}
+                    </Td>
+                    <Td className="text-slate-600">{r.email}</Td>
+                    <Td className="max-w-xs truncate font-medium text-slate-900">{r.subject}</Td>
+                    <Td className="max-w-md text-xs text-slate-500">{r.summary}</Td>
+                    <Td>
+                      <button onClick={() => keep(r.message_id)}
+                        className="text-sm font-medium text-blue-600 hover:text-blue-700 whitespace-nowrap">
+                        Keep
+                      </button>
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {irrelevant.length === 0 && (
+              <div className="py-16 text-center text-sm text-slate-400">Nothing marked irrelevant.</div>
+            )}
+          </div>
+        </>
+      )}
+
+      {tab === "active" && !loading && !error && (
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead className="border-y border-slate-100">
@@ -503,7 +579,7 @@ async function makeReply(mode) {
     setWorking(false);
   }
   const loadList = React.useCallback(() => {
-    const fetcher = showArchived ? getInboxArchived : getInbox;
+    const fetcher = filter === "other" ? getInboxArchived : getInbox;
     fetcher().then((d) => {
       setList(d);
       setId((cur) => {
@@ -511,7 +587,7 @@ async function makeReply(mode) {
         return d.length ? d[0].message_id : null;
       });
     }).catch(() => {});
-  }, [showArchived]);
+  }, [filter]);
 
   React.useEffect(loadList, [loadList]);
 
@@ -566,8 +642,13 @@ async function toGmail() {
   const FILTERS = [
     ["all", "All"],
     ["quotation", "Quotation"],
-    ["todo", "Needs action"],
+    ["sample_request", "Sample"],
+    ["delivery_followup", "Delivery"],
+    ["after_sales", "After-sales"],
+    ["payment", "Payment"],
+    ["other", "Not relevant"],
   ];
+
   const shown = list.filter((r) => {
     const s = search.toLowerCase();
     if (s && !`${r.company} ${r.subject} ${r.intent} ${r.email}`.toLowerCase().includes(s)) return false;

@@ -68,6 +68,7 @@ class Email(Base):
     fetched_at: Mapped[datetime] = mapped_column(default=datetime.now)
     viewed_at: Mapped[datetime | None] = mapped_column(DateTime)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime)
+    ignored_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"))
     customer: Mapped["Customer"] = relationship(back_populates="emails")

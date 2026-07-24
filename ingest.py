@@ -3,19 +3,48 @@ from app.models import Customer, Email, Inquiry, PriceSetting, Product, Quotatio
 from app.services.ai_service import MODEL, analyse
 from app.services.gmail_service import fetch_new
 from app.services.pricing_service import PriceSettings, calculate
+from datetime import datetime
+
+def clean(v):
+    """模型偶爾會回字串 'null' 或 'none'，當成空值處理。"""
+    if not v or not isinstance(v, str):
+        return None
+    s = v.strip()
+    return None if s.lower() in {"null", "none", "n/a", "-", ""} else s
+
+COUNTRIES = {"italy", "japan", "korea", "south korea", "china", "taiwan",
+             "germany", "france", "spain", "egypt", "australia", "mexico",
+             "brazil", "poland", "uae", "usa", "united states", "uk",
+             "united kingdom", "india", "vietnam", "thailand", "singapore",
+             "malaysia", "indonesia", "canada", "netherlands", "belgium",
+             "turkey", "saudi arabia", "russia", "hong kong"}
+
+
+def clean_company(v):
+    """公司名不該是國家名。"""
+    v = clean(v)
+    if v and v.lower().strip() in COUNTRIES:
+        return None
+    return v
 
 
 def get_or_create_customer(db, name, addr, country=None):
-    c = None
+    """公司名優先。沒有公司名時不建新客戶，只在同信箱下沿用既有的。"""
     if name:
         c = db.query(Customer).filter_by(company=name).first()
-    if not c:
-        c = db.query(Customer).filter_by(email=addr).first()
-    if c:
-        if country and not c.country:
-            c.country = country
+        if c:
+            if country and not c.country:
+                c.country = country
+            return c
+        c = Customer(company=name, email=addr, country=country)
+        db.add(c)
+        db.flush()
         return c
-    c = Customer(company=name or addr, email=addr, country=country)
+
+    c = db.query(Customer).filter_by(email=addr).first()
+    if c:
+        return c
+    c = Customer(company=addr, email=addr, country=country)
     db.add(c)
     db.flush()
     return c
@@ -83,10 +112,9 @@ def ingest(query="is:unread", limit=20):
         r = analyse(m["subject"], m["body"])
 
         email.customer_id = get_or_create_customer(
-            db, r.get("company") or m["sender_name"],
-            m["sender_email"], r.get("destination")
+            db, clean_company(r.get("company")), m["sender_email"],
+            clean(r.get("destination"))
         ).id
-
         inq = Inquiry(
             email_id=email.id,
             intent=(r.get("intent") if r.get("intent") in VALID_INTENTS else "other"),
@@ -102,6 +130,7 @@ def ingest(query="is:unread", limit=20):
         )
         db.add(inq)
         db.flush()
+        
 
         if inq.intent == "quotation":
             p = match_product(db, inq.product_text)

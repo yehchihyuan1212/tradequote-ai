@@ -91,3 +91,16 @@ export async function unarchiveEmail(messageId) {
   const r = await fetch(`${BASE}/inbox/${messageId}/unarchive`, { method: "POST" });
   return r.json();
 }
+
+export const getIrrelevant = () => get("/irrelevant");
+
+export async function purgeIrrelevant() {
+  const r = await fetch(`${BASE}/irrelevant/purge`, { method: "POST" });
+  return r.json();
+}
+
+
+export async function keepEmail(messageId) {
+  const r = await fetch(`${BASE}/inbox/${messageId}/keep`, { method: "POST" });
+  return r.json();
+}

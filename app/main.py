@@ -49,7 +49,7 @@ def root():
 
 @app.get("/api/inbox")
 def inbox(archived: bool = False, db: Session = Depends(get_db)):
-    q = db.query(Email)
+    q = db.query(Email).filter(Email.ignored_at.is_(None))
     if archived:
         q = q.filter(Email.archived_at.isnot(None))
     else:
@@ -121,12 +121,13 @@ def stats(db: Session = Depends(get_db)):
                   .group_by(Inquiry.intent).all())
     from app.models import Draft
     return {
-        "emails": db.query(Email).count(),
+        "emails": db.query(Email).filter(Email.ignored_at.is_(None)).count(),
         "analysed": db.query(Inquiry).count(),
         "quotations": db.query(Quotation).count(),
         "customers": db.query(Customer).count(),
         "unread": db.query(Email).filter(
-            Email.viewed_at.is_(None), Email.archived_at.is_(None)).count(),
+            Email.viewed_at.is_(None), Email.archived_at.is_(None),
+            Email.ignored_at.is_(None)).count(),
         "pending_drafts": db.query(Draft).filter(Draft.status == "draft").count(),
         "intent_distribution": dist,
     }
@@ -150,9 +151,16 @@ def quotations(db: Session = Depends(get_db)):
 
 @app.get("/api/customers")
 def customers(db: Session = Depends(get_db)):
-    return [{"company": c.company, "email": c.email, "country": c.country,
-             "language": c.language, "emails": len(c.emails)}
-            for c in db.query(Customer).all()]
+    rows = []
+    for c in db.query(Customer).all():
+        active = [e for e in c.emails if e.ignored_at is None]
+        if not active:
+            continue
+        rows.append({
+            "company": c.company, "email": c.email, "country": c.country,
+            "language": c.language, "emails": len(active),
+        })
+    return sorted(rows, key=lambda r: -r["emails"])
 
 
 @app.post("/api/analyse")
@@ -371,7 +379,8 @@ def sync_inbox(query: str = "from:chris990246@gmail.com", limit: int = 20,
         return {"error": "Gmail failed: " + str(e)}
 
     for m in messages:
-        if db.query(Email).filter_by(message_id=m["message_id"]).first():
+        existing = db.query(Email).filter_by(message_id=m["message_id"]).first()
+        if existing:
             continue
 
         email = Email(
@@ -388,8 +397,14 @@ def sync_inbox(query: str = "from:chris990246@gmail.com", limit: int = 20,
             db.commit()
             continue
 
-        cust = db.query(Customer).filter_by(company=r.get("company")).first() if r.get("company") else None
-        if not cust:
+        company = r.get("company")
+        cust = db.query(Customer).filter_by(company=company).first() if company else None
+        if not cust and company:
+            cust = Customer(company=company, email=m["sender_email"],
+                            country=r.get("destination"))
+            db.add(cust)
+            db.flush()
+        elif not cust:
             cust = db.query(Customer).filter_by(email=m["sender_email"]).first()
         if not cust:
             cust = Customer(company=r.get("company") or m["sender_name"],
@@ -410,6 +425,7 @@ def sync_inbox(query: str = "from:chris990246@gmail.com", limit: int = 20,
         )
         db.add(inq)
         db.flush()
+
 
         if inq.intent == "quotation":
             p = match_product(inq.product_text)
@@ -436,7 +452,7 @@ def sync_inbox(query: str = "from:chris990246@gmail.com", limit: int = 20,
 def reports(db: Session = Depends(get_db)):
     from sqlalchemy import func
 
-    total_emails = db.query(Email).count()
+    total_emails = db.query(Email).filter(Email.ignored_at.is_(None)).count()
     total_quotes = db.query(Quotation).count()
 
     # intent 分布
@@ -731,5 +747,50 @@ def unarchive_email(message_id: str, db: Session = Depends(get_db)):
     if not e:
         return {"error": "Not found"}
     e.archived_at = None
+    db.commit()
+    return {"ok": True}
+@app.get("/api/irrelevant")
+def irrelevant_emails(db: Session = Depends(get_db)):
+    rows = (db.query(Email).join(Inquiry)
+              .filter(Inquiry.intent == "other", Email.ignored_at.is_(None))
+              .order_by(Email.id.desc()).all())
+    return [{
+        "message_id": e.message_id,
+        "received": e.received_at,
+        "company": (e.inquiry.company if e.inquiry and e.inquiry.company
+                    else e.sender_name),
+        "email": e.sender_email,
+        "subject": e.subject,
+        "summary": e.inquiry.summary if e.inquiry else None,
+        "confidence": e.inquiry.confidence if e.inquiry else None,
+    } for e in rows]
+
+
+@app.post("/api/irrelevant/purge")
+def purge_irrelevant(db: Session = Depends(get_db)):
+    """清除所有不相關的信：刪掉內容，保留 message_id 供去重。"""
+    rows = (db.query(Email).join(Inquiry)
+              .filter(Inquiry.intent == "other", Email.ignored_at.is_(None)).all())
+    n = 0
+    for e in rows:
+        if e.inquiry:
+            db.delete(e.inquiry)
+        e.body = ""
+        e.subject = e.subject or ""
+        e.ignored_at = datetime.now()
+        n += 1
+    db.commit()
+    return {"ok": True, "purged": n}
+
+
+@app.post("/api/inbox/{message_id}/keep")
+def keep_email(message_id: str, db: Session = Depends(get_db)):
+    """誤判的信：從 irrelevant 移回正常流程（需要重新分析）。"""
+    e = db.query(Email).filter_by(message_id=message_id).first()
+    if not e or not e.inquiry:
+        return {"error": "Not found"}
+    e.inquiry.intent = "quotation"
+    e.inquiry.reviewed = True
+    e.inquiry.corrected_intent = "quotation"
     db.commit()
     return {"ok": True}

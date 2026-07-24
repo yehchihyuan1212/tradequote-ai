@@ -14,7 +14,7 @@ Schema:
 {
 "intent": "quotation" | "sample_request" | "delivery_followup" | "after_sales" | "payment" | "other",
   "confidence": 0-100,
-  "company": the customer's company name ONLY, never including a person's name. Look anywhere in the email - the opening line, the body, or the signature. "Kim's Electronics in Seoul, Korea here" means the company is "Kim's Electronics". In "Laura Diaz\nNext Step Inc." the company is "Next Step Inc.", not "Laura Diaz Next Step Inc.". Only use null when no company is named at all,
+  "company": the customer's company name ONLY, never including a person's name. Look anywhere in the email - the opening line, the body, or the signature. "Kim's Electronics in Seoul, Korea here" means the company is "Kim's Electronics". In "Laura Diaz\nNext Step Inc." the company is "Next Step Inc.", not "Laura Diaz Next Step Inc.". Never put a country, city, or product name here - "Italy" or "Osaka" is not a company. Only use null when no company is named at all,
   "contact": the person's name ONLY, separate from the company,
   "product": string or null,
   "quantity": integer or null,
