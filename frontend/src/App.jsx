@@ -456,6 +456,7 @@ function AIReview({ selected }) {
   const [filter, setFilter] = React.useState("all");
   const [showArchived, setShowArchived] = React.useState(false);
     const [editing, setEditing] = React.useState(false);
+  const [search, setSearch] = React.useState("");
   const [eSubject, setESubject] = React.useState("");
   const [eBody, setEBody] = React.useState("");
 
@@ -568,6 +569,8 @@ async function toGmail() {
     ["todo", "Needs action"],
   ];
   const shown = list.filter((r) => {
+    const s = search.toLowerCase();
+    if (s && !`${r.company} ${r.subject} ${r.intent} ${r.email}`.toLowerCase().includes(s)) return false;
     if (filter === "all") return true;
     if (filter === "quotation") return r.intent === "quotation";
     if (filter === "todo") return r.status !== "Drafted" && r.status !== "Sent";
@@ -582,7 +585,15 @@ async function toGmail() {
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-5 items-start">
-      <Card title="Emails">
+      <Card title="Emails"
+        action={
+          <div className="relative">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search"
+              className="pl-8 pr-2 py-1.5 w-32 rounded-lg border border-slate-200 text-xs
+                         focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500" />
+          </div>
+        }>
         <div className="px-4 pb-3 space-y-2">
           <div className="flex gap-1.5">
             <button onClick={() => setShowArchived(false)}
@@ -810,6 +821,11 @@ async function toGmail() {
 function Quotations() {
   const [rows, setRows] = React.useState([]);
   const [open, setOpen] = React.useState(null);
+  const [search, setSearch] = React.useState("");
+  const shown = rows.filter((q) => {
+    const s = search.toLowerCase();
+    return !s || `${q.quote_no} ${q.company} ${q.product} ${q.destination} ${q.status}`.toLowerCase().includes(s);
+  });
 
   const load = React.useCallback(() => {
     getQuotations().then((d) => { setRows(d); if (d.length) setOpen(d[0]); }).catch(() => {});
@@ -837,14 +853,22 @@ function Quotations() {
 
   return (
     <div className="space-y-5">
-      <Card title="Quotations">
+      <Card title="Quotations"
+        action={
+          <div className="relative">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search quotations"
+              className="pl-9 pr-3 py-2 w-56 rounded-lg border border-slate-200 text-sm
+                         focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500" />
+          </div>
+        }>
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead className="border-y border-slate-100">
               <tr><Th>Quote no.</Th><Th>Customer</Th><Th>Product</Th><Th>Qty</Th><Th>Destination</Th><Th>CIF</Th><Th>Status</Th><Th /></tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {rows.map((q) => (
+              {shown.map((q) => (
                 <tr key={q.quote_no}
                     className={`hover:bg-slate-50 ${open?.quote_no === q.quote_no ? "bg-blue-50/50" : ""}`}>
                   <Td className="font-mono text-xs text-slate-500">{q.quote_no}</Td>
@@ -863,7 +887,7 @@ function Quotations() {
             </tbody>
           </table>
         </div>
-        {rows.length === 0 && (
+        {shown.length === 0 && (
           <div className="py-16 text-center text-sm text-slate-400">
             No quotations yet. Emails with a quotation intent generate one automatically.
           </div>
@@ -912,6 +936,7 @@ function Drafts() {
   const [rows, setRows] = React.useState([]);
   const [sel, setSel] = React.useState(null);
   const [tab, setTab] = React.useState("draft");
+  const [search, setSearch] = React.useState("");
   const [editing, setEditing] = React.useState(false);
   const [subject, setSubject] = React.useState("");
   const [body, setBody] = React.useState("");
@@ -931,7 +956,11 @@ function Drafts() {
     if (!shown.length) setSel(null);
   }, [tab, rows]);
 
-  const shown = rows.filter((d) => tab === "draft" ? d.status !== "sent" : d.status === "sent");
+  const shown = rows.filter((d) => {
+    const s = search.toLowerCase();
+    if (s && !`${d.to} ${d.subject} ${d.body} ${d.company || ""}`.toLowerCase().includes(s)) return false;
+    return tab === "draft" ? d.status !== "sent" : d.status === "sent";
+  });
   const counts = {
     draft: rows.filter((d) => d.status !== "sent").length,
     sent: rows.filter((d) => d.status === "sent").length,
@@ -965,7 +994,15 @@ function Drafts() {
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-      <Card title="Drafts" className="lg:col-span-1">
+      <Card title="Drafts" className="lg:col-span-1"
+        action={
+          <div className="relative">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search"
+              className="pl-8 pr-2 py-1.5 w-32 rounded-lg border border-slate-200 text-xs
+                         focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500" />
+          </div>
+        }>
         <div className="px-4 pb-3 flex gap-1.5">
           {[["draft", "Pending", counts.draft], ["sent", "In Gmail", counts.sent]].map(([k, lb, n]) => (
             <button key={k} onClick={() => setTab(k)}

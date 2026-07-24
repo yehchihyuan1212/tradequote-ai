@@ -3,7 +3,7 @@ import re
 
 import httpx
 
-MODEL = "qwen3.5:0.8b" # "qwen3.5:4b" or "qwen3.5:0.8b"
+MODEL = "qwen3.5:4b" # "qwen3.5:4b" or "qwen3.5:0.8b"
 OLLAMA = "http://localhost:11434/api/chat"
 
 SYSTEM = """You extract structured data from international trade emails.
