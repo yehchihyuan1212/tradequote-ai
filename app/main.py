@@ -47,6 +47,28 @@ def root():
     return {"service": "TradeQuote AI", "docs": "/docs"}
 
 
+COUNTRIES = {"italy", "japan", "korea", "south korea", "china", "taiwan",
+             "germany", "france", "spain", "egypt", "australia", "mexico",
+             "brazil", "poland", "uae", "usa", "united states", "uk",
+             "united kingdom", "india", "vietnam", "thailand", "singapore",
+             "malaysia", "indonesia", "canada", "netherlands", "belgium",
+             "turkey", "saudi arabia", "russia", "hong kong"}
+
+
+def _clean(v):
+    """模型偶爾會回字串 'null'，當成空值處理。"""
+    if not v or not isinstance(v, str):
+        return None
+    s = v.strip()
+    return None if s.lower() in {"null", "none", "n/a", "-", ""} else s
+
+
+def _clean_company(v):
+    """公司名不該是國家名。"""
+    v = _clean(v)
+    return None if v and v.lower() in COUNTRIES else v
+
+
 @app.get("/api/inbox")
 def inbox(archived: bool = False, db: Session = Depends(get_db)):
     q = db.query(Email).filter(Email.ignored_at.is_(None))
@@ -397,20 +419,22 @@ def sync_inbox(query: str = "from:chris990246@gmail.com", limit: int = 20,
             db.commit()
             continue
 
-        company = r.get("company")
+        company = _clean_company(r.get("company"))
+        country = _clean(r.get("destination"))
         cust = db.query(Customer).filter_by(company=company).first() if company else None
         if not cust and company:
-            cust = Customer(company=company, email=m["sender_email"],
-                            country=r.get("destination"))
+            cust = Customer(company=company, email=m["sender_email"], country=country)
             db.add(cust)
             db.flush()
         elif not cust:
             cust = db.query(Customer).filter_by(email=m["sender_email"]).first()
-        if not cust:
-            cust = Customer(company=r.get("company") or m["sender_name"],
-                            email=m["sender_email"], country=r.get("destination"))
-            db.add(cust)
-            db.flush()
+            if not cust:
+                cust = Customer(company=m["sender_email"],
+                                email=m["sender_email"], country=country)
+                db.add(cust)
+                db.flush()
+        if country and not cust.country:
+            cust.country = country
         email.customer_id = cust.id
 
         inq = Inquiry(

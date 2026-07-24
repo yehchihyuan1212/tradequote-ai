@@ -653,9 +653,7 @@ async function toGmail() {
     const s = search.toLowerCase();
     if (s && !`${r.company} ${r.subject} ${r.intent} ${r.email}`.toLowerCase().includes(s)) return false;
     if (filter === "all") return true;
-    if (filter === "quotation") return r.intent === "quotation";
-    if (filter === "todo") return r.status !== "Drafted" && r.status !== "Sent";
-    return true;
+    return r.intent === filter;
   });
 
   const ex = data?.extracted;
@@ -675,30 +673,14 @@ async function toGmail() {
                          focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500" />
           </div>
         }>
-        <div className="px-4 pb-3 space-y-2">
-          <div className="flex gap-1.5">
-            <button onClick={() => setShowArchived(false)}
-              className={`flex-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors
-                ${!showArchived ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
-              Active
+        <div className="px-3 pb-2 flex flex-wrap gap-1">
+          {FILTERS.map(([k, lb]) => (
+            <button key={k} onClick={() => setFilter(k)}
+              className={`px-2 py-1 rounded text-[11px] font-medium transition-colors
+                ${filter === k ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+              {lb}
             </button>
-            <button onClick={() => setShowArchived(true)}
-              className={`flex-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors
-                ${showArchived ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
-              Archived
-            </button>
-          </div>
-          {!showArchived && (
-            <div className="flex gap-1.5">
-              {FILTERS.map(([k, lb]) => (
-                <button key={k} onClick={() => setFilter(k)}
-                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors
-                    ${filter === k ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
-                  {lb}
-                </button>
-              ))}
-            </div>
-          )}
+          ))}
         </div>
         <div className="divide-y divide-slate-100 border-t border-slate-100 max-h-[70vh] overflow-y-auto">
           {shown.map((r) => (
