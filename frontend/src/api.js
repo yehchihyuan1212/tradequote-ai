@@ -12,6 +12,7 @@ export const getStats      = () => get("/stats");
 export const getProducts   = () => get("/products");
 export const getQuotations = () => get("/quotations");
 export const getCustomers  = () => get("/customers");
+export const getCustomer   = (id) => get(`/customers/${id}`);
 export const markViewed = (id) =>
   fetch(`${BASE}/inbox/${id}/viewed`, { method: "POST" });
 

@@ -178,11 +178,52 @@ def customers(db: Session = Depends(get_db)):
         active = [e for e in c.emails if e.ignored_at is None]
         if not active:
             continue
+        quotes = [e.inquiry.quotation for e in active
+                  if e.inquiry and e.inquiry.quotation]
+        last = max(active, key=lambda e: e.fetched_at)
         rows.append({
-            "company": c.company, "email": c.email, "country": c.country,
-            "language": c.language, "emails": len(active),
+            "id": c.id, "company": c.company, "email": c.email,
+            "country": c.country, "language": c.language,
+            "industry": c.industry, "emails": len(active),
+            "quotations": len(quotes),
+            "total_value": sum(q.cif for q in quotes),
+            "last_contact": last.received_at,
         })
     return sorted(rows, key=lambda r: -r["emails"])
+
+
+@app.get("/api/customers/{customer_id}")
+def customer_detail(customer_id: int, db: Session = Depends(get_db)):
+    c = db.query(Customer).filter_by(id=customer_id).first()
+    if not c:
+        return {"error": "Not found"}
+
+    active = [e for e in c.emails if e.ignored_at is None]
+    history = []
+    for e in sorted(active, key=lambda e: e.fetched_at, reverse=True):
+        i = e.inquiry
+        q = i.quotation if i else None
+        history.append({
+            "message_id": e.message_id,
+            "subject": e.subject,
+            "received": e.received_at,
+            "intent": i.intent if i else None,
+            "status": _status(e),
+            "quote_no": q.quote_no if q else None,
+            "product": q.product.name if q else (i.product_text if i else None),
+            "quantity": q.quantity if q else (i.quantity if i else None),
+            "destination": q.destination if q else (i.destination if i else None),
+            "cif": q.cif if q else None,
+        })
+
+    return {
+        "id": c.id, "company": c.company, "email": c.email,
+        "contact": c.contact, "country": c.country, "language": c.language,
+        "industry": c.industry,
+        "quotations": sum(1 for h in history if h["quote_no"]),
+        "total_value": sum(h["cif"] for h in history if h["cif"]),
+        "history": history,
+    }
 
 
 @app.post("/api/analyse")

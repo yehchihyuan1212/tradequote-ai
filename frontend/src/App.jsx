@@ -10,7 +10,7 @@ import {
   ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar
 } from "recharts";
 
-import { getInbox, getEmail, getStats, getProducts, getQuotations, getCustomers,
+import { getInbox, getEmail, getStats, getProducts, getQuotations, getCustomers, getCustomer,
          markViewed, getSettings, getFreight, saveSettings,
          getDrafts, generateDraft, saveDraft, sendDraftToGmail, recalcQuote,syncInbox, getReports, getSystemInfo, quoteFromEmail, draftFromEmail, regenerateDraft, getInboxArchived, replyFromEmail, archiveEmail, unarchiveEmail, getIrrelevant, purgeIrrelevant, keepEmail } from "./api";
 
@@ -109,14 +109,6 @@ const products = [
   { sku: "A1003", name: "Bluetooth Speaker",price: 12.8, moq: 200,  lead: 30, weight: 0.35, hs: "8518.22" },
   { sku: "A1004", name: "Charger",          price: 5.6,  moq: 500,  lead: 20, weight: 0.11, hs: "8504.40" },
   { sku: "A1005", name: "Plastic Case",     price: 1.4,  moq: 1000, lead: 15, weight: 0.03, hs: "3926.90" },
-];
-
-const customers = [
-  { name: "ABC Trading Co.", country: "Japan",     lang: "English", industry: "Electronics", quotes: 5, last: "2026-07-20", value: 18400 },
-  { name: "Sunrise Ltd.",    country: "Hong Kong", lang: "Chinese", industry: "Retail",      quotes: 3, last: "2026-07-20", value: 7200 },
-  { name: "Global Tech",     country: "Korea",     lang: "English", industry: "Distribution",quotes: 8, last: "2026-07-19", value: 33100 },
-  { name: "Next Step Inc.",  country: "Mexico",    lang: "Spanish", industry: "Wholesale",   quotes: 2, last: "2026-07-19", value: 5400 },
-  { name: "Top Union Corp.", country: "UAE",       lang: "English", industry: "Trading",     quotes: 6, last: "2026-07-19", value: 21900 },
 ];
 
 const quotations = [
@@ -1158,29 +1150,99 @@ function Drafts() {
 }
 
 function Customers() {
+  const [rows, setRows] = React.useState([]);
+  const [openId, setOpenId] = React.useState(null);
+  const [detail, setDetail] = React.useState(null);
+
+  React.useEffect(() => {
+    getCustomers().then(setRows).catch(() => {});
+  }, []);
+
+  React.useEffect(() => {
+    if (openId == null) { setDetail(null); return; }
+    getCustomer(openId).then(setDetail).catch(() => {});
+  }, [openId]);
+
+  const label = (i) => i ? i.split("_").map(w => w[0].toUpperCase() + w.slice(1)).join(" ") : "—";
+  const tint = (i) => ({
+    quotation: "bg-blue-50 text-blue-700",
+    sample_request: "bg-orange-50 text-orange-700",
+    delivery_followup: "bg-purple-50 text-purple-700",
+    after_sales: "bg-red-50 text-red-700",
+    payment: "bg-amber-50 text-amber-700",
+  }[i] || "bg-slate-100 text-slate-600");
+  const stint = (s) => ({
+    Pending:  "bg-slate-100 text-slate-600",
+    Analysed: "bg-slate-100 text-slate-600",
+    Quoted:   "bg-blue-50 text-blue-700",
+    Drafted:  "bg-amber-50 text-amber-700",
+    Sent:     "bg-green-50 text-green-700",
+  }[s] || "bg-slate-100 text-slate-600");
+
   return (
-    <Card title="Customers">
-      <div className="overflow-x-auto">
-        <table className="w-full">
-          <thead className="border-y border-slate-100">
-            <tr><Th>Company</Th><Th>Country</Th><Th>Industry</Th><Th>Language</Th><Th>Quotations</Th><Th>Total value</Th><Th>Last contact</Th></tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {customers.map((c) => (
-              <tr key={c.name} className="hover:bg-slate-50 cursor-pointer">
-                <Td className="font-medium text-slate-900">{c.name}</Td>
-                <Td>{c.country}</Td>
-                <Td>{c.industry}</Td>
-                <Td>{c.lang}</Td>
-                <Td>{c.quotes}</Td>
-                <Td className="font-medium tabular-nums">USD {c.value.toLocaleString()}</Td>
-                <Td className="text-slate-500">{c.last}</Td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </Card>
+    <div className="space-y-5">
+      <Card title="Customers">
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="border-y border-slate-100">
+              <tr><Th>Company</Th><Th>Country</Th><Th>Industry</Th><Th>Language</Th><Th>Quotations</Th><Th>Total value</Th><Th>Last contact</Th></tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {rows.map((c) => (
+                <tr key={c.id} onClick={() => setOpenId(c.id)}
+                    className={`hover:bg-slate-50 cursor-pointer ${openId === c.id ? "bg-blue-50/50" : ""}`}>
+                  <Td className="font-medium text-slate-900">{c.company}</Td>
+                  <Td>{c.country || "—"}</Td>
+                  <Td>{c.industry || "—"}</Td>
+                  <Td>{c.language}</Td>
+                  <Td>{c.quotations}</Td>
+                  <Td className="font-medium tabular-nums">USD {c.total_value.toLocaleString()}</Td>
+                  <Td className="text-slate-500">{c.last_contact || "—"}</Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {rows.length === 0 && (
+          <div className="py-16 text-center text-sm text-slate-400">
+            No customers yet. Sync the inbox to build the customer list.
+          </div>
+        )}
+      </Card>
+
+      {openId != null && (
+        <Card title={detail ? `History — ${detail.company}` : "History"}>
+          {!detail ? (
+            <div className="py-10 text-center text-sm text-slate-400">Loading…</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead className="border-y border-slate-100">
+                  <tr><Th>Received</Th><Th>Subject</Th><Th>Intent</Th><Th>Product</Th><Th>Qty</Th><Th>Quote no.</Th><Th>CIF</Th><Th>Status</Th></tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {detail.history.map((h) => (
+                    <tr key={h.message_id} className="hover:bg-slate-50">
+                      <Td className="text-slate-500">{h.received}</Td>
+                      <Td className="max-w-xs truncate">{h.subject}</Td>
+                      <Td><Badge cls={tint(h.intent)}>{label(h.intent)}</Badge></Td>
+                      <Td>{h.product || "—"}</Td>
+                      <Td className="tabular-nums">{h.quantity ?? "—"}</Td>
+                      <Td className="font-mono text-xs text-slate-500">{h.quote_no || "—"}</Td>
+                      <Td className="tabular-nums">{h.cif ? `USD ${h.cif.toLocaleString()}` : "—"}</Td>
+                      <Td><Badge cls={stint(h.status)}>{h.status}</Badge></Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {detail.history.length === 0 && (
+                <div className="py-10 text-center text-sm text-slate-400">No inquiries from this customer yet.</div>
+              )}
+            </div>
+          )}
+        </Card>
+      )}
+    </div>
   );
 }
 
