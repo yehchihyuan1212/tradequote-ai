@@ -571,7 +571,7 @@ async function makeReply(mode) {
     setWorking(false);
   }
   const loadList = React.useCallback(() => {
-    const fetcher = filter === "other" ? getInboxArchived : getInbox;
+    const fetcher = getInbox;
     fetcher().then((d) => {
       setList(d);
       setId((cur) => {
@@ -638,13 +638,12 @@ async function toGmail() {
     ["delivery_followup", "Delivery"],
     ["after_sales", "After-sales"],
     ["payment", "Payment"],
-    ["other", "Not relevant"],
   ];
 
   const shown = list.filter((r) => {
     const s = search.toLowerCase();
     if (s && !`${r.company} ${r.subject} ${r.intent} ${r.email}`.toLowerCase().includes(s)) return false;
-    if (filter === "all") return true;
+    if (filter === "all") return r.intent !== "other";
     return r.intent === filter;
   });
 

@@ -817,7 +817,8 @@ def unarchive_email(message_id: str, db: Session = Depends(get_db)):
 @app.get("/api/irrelevant")
 def irrelevant_emails(db: Session = Depends(get_db)):
     rows = (db.query(Email).join(Inquiry)
-              .filter(Inquiry.intent == "other", Email.ignored_at.is_(None))
+              .filter(Inquiry.intent == "other", Email.ignored_at.is_(None),
+                      Inquiry.reviewed.is_(False))
               .order_by(Email.id.desc()).all())
     return [{
         "message_id": e.message_id,
@@ -835,7 +836,8 @@ def irrelevant_emails(db: Session = Depends(get_db)):
 def purge_irrelevant(db: Session = Depends(get_db)):
     """清除所有不相關的信：刪掉內容，保留 message_id 供去重。"""
     rows = (db.query(Email).join(Inquiry)
-              .filter(Inquiry.intent == "other", Email.ignored_at.is_(None)).all())
+              .filter(Inquiry.intent == "other", Email.ignored_at.is_(None),
+                      Inquiry.reviewed.is_(False)).all())
     n = 0
     for e in rows:
         if e.inquiry:
@@ -850,12 +852,28 @@ def purge_irrelevant(db: Session = Depends(get_db)):
 
 @app.post("/api/inbox/{message_id}/keep")
 def keep_email(message_id: str, db: Session = Depends(get_db)):
-    """誤判的信：從 irrelevant 移回正常流程（需要重新分析）。"""
+    """把誤判的信留下來：產生空白草稿，讓使用者自己寫。"""
+    from app.models import Draft
+
     e = db.query(Email).filter_by(message_id=message_id).first()
     if not e or not e.inquiry:
         return {"error": "Not found"}
-    e.inquiry.intent = "quotation"
-    e.inquiry.reviewed = True
-    e.inquiry.corrected_intent = "quotation"
+
+    i = e.inquiry
+    i.reviewed = True
+
+    existing = db.query(Draft).filter_by(inquiry_id=i.id).first()
+    if existing:
+        db.commit()
+        return {"ok": True, "draft_id": existing.id}
+
+    d = Draft(
+        inquiry_id=i.id,
+        to_email=e.sender_email,
+        subject="Re: " + (e.subject or "Your enquiry"),
+        body=compose_blank_reply(i.contact),
+    )
+    db.add(d)
+    i.status = "drafted"
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "draft_id": d.id}
