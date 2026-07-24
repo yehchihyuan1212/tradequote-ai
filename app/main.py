@@ -877,3 +877,46 @@ def keep_email(message_id: str, db: Session = Depends(get_db)):
     i.status = "drafted"
     db.commit()
     return {"ok": True, "draft_id": d.id}
+
+class ProductIn(BaseModel):
+    sku: str
+    name: str
+    unit_price: float
+    moq: int
+    lead_days: int
+    weight_kg: float | None = None
+    hs_code: str | None = None
+    aliases: str | None = None
+
+
+@app.post("/api/products")
+def create_product(payload: ProductIn, db: Session = Depends(get_db)):
+    if db.query(Product).filter_by(sku=payload.sku).first():
+        return {"error": f"SKU {payload.sku} already exists"}
+    p = Product(**payload.model_dump())
+    db.add(p)
+    db.commit()
+    return {"ok": True, "sku": p.sku}
+
+
+@app.put("/api/products/{sku}")
+def update_product(sku: str, payload: ProductIn, db: Session = Depends(get_db)):
+    p = db.query(Product).filter_by(sku=sku).first()
+    if not p:
+        return {"error": "Not found"}
+    for k, v in payload.model_dump().items():
+        setattr(p, k, v)
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/products/{sku}")
+def delete_product(sku: str, db: Session = Depends(get_db)):
+    p = db.query(Product).filter_by(sku=sku).first()
+    if not p:
+        return {"error": "Not found"}
+    if db.query(Quotation).filter_by(product_id=p.id).first():
+        return {"error": "This product has quotations and cannot be deleted"}
+    db.delete(p)
+    db.commit()
+    return {"ok": True}

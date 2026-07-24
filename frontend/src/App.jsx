@@ -12,7 +12,7 @@ import {
 
 import { getInbox, getEmail, getStats, getProducts, getQuotations, getCustomers, getCustomer,
          markViewed, getSettings, getFreight, saveSettings,
-         getDrafts, generateDraft, saveDraft, sendDraftToGmail, recalcQuote,syncInbox, getReports, getSystemInfo, quoteFromEmail, draftFromEmail, regenerateDraft, getInboxArchived, replyFromEmail, archiveEmail, unarchiveEmail, getIrrelevant, purgeIrrelevant, keepEmail } from "./api";
+         getDrafts, generateDraft, saveDraft, sendDraftToGmail, recalcQuote,syncInbox, getReports, getSystemInfo, quoteFromEmail, draftFromEmail, regenerateDraft, getInboxArchived, replyFromEmail, archiveEmail, unarchiveEmail, getIrrelevant, purgeIrrelevant, keepEmail, createProduct, updateProduct, deleteProduct } from "./api";
 
 /* ---------------- mock data ---------------- */
 
@@ -1245,32 +1245,132 @@ function Customers() {
   );
 }
 
-function Products() {
+﻿function Products() {
+  const [rows, setRows] = React.useState([]);
+  const [err, setErr] = React.useState(null);
+  const [adding, setAdding] = React.useState(false);
+  const [saving, setSaving] = React.useState(false);
+  const [form, setForm] = React.useState({
+    sku: "", name: "", price: "", moq: "", lead: "", weight: "", hs_code: "", aliases: "",
+  });
+
+  const load = React.useCallback(() => {
+    getProducts().then(setRows).catch(() => setErr("Can't load products."));
+  }, []);
+
+  React.useEffect(load, [load]);
+
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+
+  function reset() {
+    setForm({ sku: "", name: "", price: "", moq: "", lead: "", weight: "", hs_code: "", aliases: "" });
+    setAdding(false);
+    setErr(null);
+  }
+
+  async function save() {
+    if (!form.sku.trim() || !form.name.trim() || !form.price || !form.moq || !form.lead) {
+      setErr("SKU, name, price, MOQ and lead time are required.");
+      return;
+    }
+    setSaving(true);
+    setErr(null);
+    const r = await createProduct({
+      sku: form.sku.trim(),
+      name: form.name.trim(),
+      unit_price: parseFloat(form.price),
+      moq: parseInt(form.moq, 10),
+      lead_days: parseInt(form.lead, 10),
+      weight_kg: form.weight ? parseFloat(form.weight) : null,
+      hs_code: form.hs_code.trim() || null,
+      aliases: form.aliases.trim() || null,
+    });
+    setSaving(false);
+    if (r.error) { setErr(r.error); return; }
+    reset();
+    load();
+  }
+
+  async function remove(sku) {
+    if (!window.confirm(`Delete ${sku}?`)) return;
+    const r = await deleteProduct(sku);
+    if (r.error) { setErr(r.error); return; }
+    load();
+  }
+
   return (
     <Card title="Products"
-      action={<button className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700">Add product</button>}>
+      action={
+        <button onClick={() => adding ? reset() : setAdding(true)}
+          className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700">
+          {adding ? "Cancel" : "Add product"}
+        </button>
+      }>
+      {err && (
+        <div className="mx-6 mt-4 p-3 rounded-lg bg-red-50 border border-red-100 text-sm text-red-700">
+          {err}
+        </div>
+      )}
+
+      {adding && (
+        <div className="px-6 py-5 border-b border-slate-100 bg-slate-50/50">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Field label="SKU *" value={form.sku} onChange={set("sku")} />
+            <Field label="Product name *" value={form.name} onChange={set("name")} />
+            <Field label="Unit price (USD) *" value={form.price} onChange={set("price")} />
+            <Field label="MOQ (pcs) *" value={form.moq} onChange={set("moq")} />
+            <Field label="Lead time (days) *" value={form.lead} onChange={set("lead")} />
+            <Field label="Weight (kg)" value={form.weight} onChange={set("weight")} />
+            <Field label="HS code" value={form.hs_code} onChange={set("hs_code")} />
+            <Field label="Aliases" value={form.aliases} onChange={set("aliases")} />
+          </div>
+          <p className="text-xs text-slate-400 mt-3">
+            Aliases help match customer wording to this product.
+          </p>
+          <div className="flex gap-2 mt-4">
+            <button onClick={save} disabled={saving}
+              className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:bg-slate-300">
+              {saving ? "Saving..." : "Save product"}
+            </button>
+            <button onClick={reset}
+              className="px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-600 hover:bg-slate-50">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead className="border-y border-slate-100">
-            <tr><Th>SKU</Th><Th>Product</Th><Th>Unit price</Th><Th>MOQ</Th><Th>Lead time</Th><Th>Weight</Th><Th>HS code</Th></tr>
+            <tr><Th>SKU</Th><Th>Product</Th><Th>Unit price</Th><Th>MOQ</Th><Th>Lead time</Th><Th>HS code</Th><Th /></tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {products.map((p) => (
+            {rows.map((p) => (
               <tr key={p.sku} className="hover:bg-slate-50">
                 <Td className="font-mono text-xs text-slate-500">{p.sku}</Td>
                 <Td className="font-medium text-slate-900">{p.name}</Td>
                 <Td className="tabular-nums">USD {p.price.toFixed(2)}</Td>
                 <Td>{p.moq.toLocaleString()} pcs</Td>
                 <Td>{p.lead} days</Td>
-                <Td>{p.weight} kg</Td>
-                <Td className="font-mono text-xs text-slate-500">{p.hs}</Td>
+                <Td className="font-mono text-xs text-slate-500">{p.hs_code || "-"}</Td>
+                <Td>
+                  <button onClick={() => remove(p.sku)}
+                    className="text-sm font-medium text-red-600 hover:text-red-700">
+                    Delete
+                  </button>
+                </Td>
               </tr>
             ))}
           </tbody>
         </table>
+        {rows.length === 0 && (
+          <div className="py-16 text-center text-sm text-slate-400">No products yet.</div>
+        )}
       </div>
+
       <div className="px-6 py-4 text-xs text-slate-400 border-t border-slate-100">
-        The pricing service reads unit price, MOQ and weight from this table.
+        The pricing engine reads unit price, MOQ and lead time from this table.
       </div>
     </Card>
   );

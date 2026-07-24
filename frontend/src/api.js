@@ -105,3 +105,26 @@ export async function keepEmail(messageId) {
   const r = await fetch(`${BASE}/inbox/${messageId}/keep`, { method: "POST" });
   return r.json();
 }
+
+export async function createProduct(data) {
+  const r = await fetch(`${BASE}/products`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  return r.json();
+}
+
+export async function updateProduct(sku, data) {
+  const r = await fetch(`${BASE}/products/${sku}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  return r.json();
+}
+
+export async function deleteProduct(sku) {
+  const r = await fetch(`${BASE}/products/${sku}`, { method: "DELETE" });
+  return r.json();
+}
