@@ -144,8 +144,9 @@ def ingest(query="is:unread", limit=20):
                     product_id=p.id,
                     quantity=qty,
                     destination=calc["destination"],
-                    cost=calc["cost"], exw=calc["exw"], fob=calc["fob"],
-                    cif=calc["cif"], unit_cif=calc["unit_cif"],
+                    cost=calc["cost"], exw=calc["exw"], fca=calc["fca"], fob=calc["fob"],
+                    cfr=calc["cfr"], cif=calc["cif"], cpt=calc["cpt"], cip=calc["cip"],
+                    unit_cif=calc["unit_cif"],
                     margin_used=s.profit_margin,
                     freight_used=calc["freight"],
                 ))
@@ -159,4 +160,4 @@ def ingest(query="is:unread", limit=20):
     db.close()
 
 if __name__ == "__main__":
-    ingest(query="from:chris990246@gmail.com")
+    ingest(query="is:unread")

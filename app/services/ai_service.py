@@ -3,7 +3,7 @@ import re
 
 import httpx
 
-MODEL = "qwen3.5:0.8b" # "qwen3.5:4b" or "qwen3.5:0.8b"
+MODEL = "qwen3.5:4b" # "qwen3.5:4b" or "qwen3.5:0.8b"
 OLLAMA = "http://localhost:11434/api/chat"
 
 SYSTEM = """You extract structured data from international trade emails.
@@ -26,7 +26,7 @@ Schema:
   "product": string or null,
   "quantity": integer or null,
   "destination": country name only, never a city or port (e.g. "Japan" not "Osaka"),
-  "incoterm": "EXW" | "FOB" | "CIF" or null,
+  "incoterm": "EXW" | "FCA" | "FAS" | "FOB" | "CFR" | "CIF" | "CPT" | "CIP" | "DAP" | "DPU" | "DDP" or null,
   "summary": one English sentence describing what the customer wants
 }
 
@@ -75,7 +75,7 @@ def analyse(subject: str, body: str) -> dict:
         "options": {"temperature": 0},
         "messages": [
             {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": f"Subject: {subject}\n\n{body}"},
+            {"role": "user", "content": f"Subject: {subject}\n\n{(body or '')[:1500]}"},
         ],
     })
     r.raise_for_status()
@@ -83,4 +83,34 @@ def analyse(subject: str, body: str) -> dict:
     cleaned = _clean(raw)
     if not cleaned:
         raise ValueError(f"Model returned nothing usable: {raw!r}")
-    return json.loads(cleaned)
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        # 模型輸出被截斷或格式壞掉：回傳安全預設值，不中斷整批處理
+        return {"intent": "other", "confidence": 0, "company": None,
+                "contact": None, "product": None, "quantity": None,
+                "destination": None, "incoterm": None,
+                "summary": "（AI 回應格式異常，已跳過分析）"}
+
+    # 清理 AI 輸出：把清單欄位轉成資料庫能存的型別
+    def _to_text(v):
+        if isinstance(v, list):
+            return ", ".join(str(x) for x in v)
+        return v
+
+    def _to_int(v):
+        if isinstance(v, list):
+            v = v[0] if v else None
+        if isinstance(v, str):
+            digits = "".join(ch for ch in v if ch.isdigit())
+            return int(digits) if digits else None
+        if isinstance(v, (int, float)):
+            return int(v)
+        return None
+
+    data["product"] = _to_text(data.get("product"))
+    data["company"] = _to_text(data.get("company"))
+    data["contact"] = _to_text(data.get("contact"))
+    data["destination"] = _to_text(data.get("destination"))
+    data["quantity"] = _to_int(data.get("quantity"))
+    return data

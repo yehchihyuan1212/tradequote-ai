@@ -1,6 +1,38 @@
-def compose_quotation_reply(contact, product, sku, qty, dest,
-                            cif, unit_cif, moq, lead_days, validity=30):
+from app.services.pricing_service import UNSUPPORTED_INCOTERMS
+
+INCOTERM_LABELS = {
+    "exw": "EXW", "fca": "FCA", "fob": "FOB", "cfr": "CFR",
+    "cif": "CIF", "cpt": "CPT", "cip": "CIP",
+}
+
+
+def compose_quotation_reply(contact, product, sku, qty, dest, prices,
+                            moq, lead_days, incoterm=None, validity=30):
+    """prices: dict with exw/fca/fob/cfr/cif/cpt/cip and their unit_ prices
+    (see pricing_service.calculate). incoterm: what the customer asked for —
+    quoted directly if we can calculate it, otherwise falls back to FOB + CIF.
+    """
     greeting = contact or "Sir/Madam"
+    req = (incoterm or "").upper()
+    key = req.lower()
+
+    if key in INCOTERM_LABELS:
+        price_lines = (
+            f"  Unit price  : USD {prices[f'unit_{key}']:.4f}\n"
+            f"  {INCOTERM_LABELS[key]} {dest}   : USD {prices[key]:,.2f}"
+        )
+    else:
+        note = ""
+        if req in UNSUPPORTED_INCOTERMS:
+            note = (f"  Note: you requested {req} terms. This involves destination-side duties/\n"
+                     f"  charges we do not have data for and cannot quote automatically — please\n"
+                     f"  contact us directly for {req} pricing.\n\n")
+        price_lines = (
+            f"{note}"
+            f"  FOB {dest}   : USD {prices['fob']:,.2f}  (unit USD {prices['unit_fob']:.4f})\n"
+            f"  CIF {dest}   : USD {prices['cif']:,.2f}  (unit USD {prices['unit_cif']:.4f})"
+        )
+
     return f"""Dear {greeting},
 
 Thank you for your inquiry regarding {product}.
@@ -9,8 +41,7 @@ We are pleased to quote as follows:
 
   Product     : {product} ({sku})
   Quantity    : {qty:,} pcs
-  Unit price  : USD {unit_cif:.4f}
-  CIF {dest}   : USD {cif:,.2f}
+{price_lines}
   MOQ         : {moq:,} pcs
   Lead time   : {lead_days} days after order confirmation
 

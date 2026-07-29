@@ -12,7 +12,7 @@ import {
 
 import { getInbox, getEmail, getStats, getProducts, getQuotations, getCustomers, getCustomer,
          markViewed, getSettings, getFreight, saveSettings,
-         getDrafts, generateDraft, saveDraft, sendDraftToGmail, recalcQuote,syncInbox, getReports, getSystemInfo, quoteFromEmail, draftFromEmail, regenerateDraft, getInboxArchived, replyFromEmail, archiveEmail, unarchiveEmail, getIrrelevant, purgeIrrelevant, keepEmail, createProduct, updateProduct, deleteProduct } from "./api";
+         getDrafts, generateDraft, saveDraft, sendDraftToGmail, recalcQuote,syncInbox, getReports, getSystemInfo, quoteFromEmail, draftFromEmail, regenerateDraft, getInboxArchived, replyFromEmail, archiveEmail, unarchiveEmail, getIrrelevant, purgeIrrelevant, keepEmail, createProduct, updateProduct, deleteProduct, createFreight, deleteFreight } from "./api";
 
 /* ---------------- mock data ---------------- */
 
@@ -31,6 +31,17 @@ const STATUS = {
   Analyzing:    "bg-blue-50 text-blue-700",
   Sent:         "bg-emerald-50 text-emerald-700",
 };
+
+const INCOTERM_KEYS = ["EXW", "FCA", "FOB", "CFR", "CIF", "CPT", "CIP"];
+const UNSUPPORTED_INCOTERMS = new Set(["DAP", "DPU", "DDP", "FAS"]);
+
+const COUNTRY_OPTIONS = [
+  "Australia", "Belgium", "Brazil", "Canada", "China", "Egypt", "France",
+  "Germany", "Hong Kong", "India", "Indonesia", "Italy", "Japan", "Korea",
+  "Malaysia", "Mexico", "Netherlands", "Poland", "Russia", "Saudi Arabia",
+  "Singapore", "Spain", "Taiwan", "Thailand", "Turkey", "UAE", "UK", "USA",
+  "Vietnam",
+];
 
 const emails = [
   { id: 1, date: "2026-07-20 09:15", from: "ABC Trading Co.", contact: "Mr. Smith",
@@ -762,11 +773,22 @@ async function toGmail() {
                       <DollarSign size={15} /> {working ? "Calculating…" : "Generate quotation for this email"}
                     </button>
                   )}
-                  {q && (
+                  {q && (() => {
+                    const requested = ex.incoterm ? ex.incoterm.toUpperCase() : null;
+                    const isUnsupported = requested && UNSUPPORTED_INCOTERMS.has(requested);
+                    const highlightKey = isUnsupported ? null : (requested || "CIF");
+                    return (
                     <>
-                      <div className="grid grid-cols-3 gap-3">
-                        {[["EXW", q.exw], ["FOB", q.fob], ["CIF", q.cif]].map(([k, v]) => {
-                          const on = (ex.incoterm || "CIF") === k;
+                      {isUnsupported && (
+                        <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-800 mb-3">
+                          客戶要求 {requested}，此條件涉及目的地稅費，系統暫不支援自動計算，請人工報價。
+                        </div>
+                      )}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                        {INCOTERM_KEYS.map((k) => {
+                          const v = q[k.toLowerCase()];
+                          if (v == null) return null;
+                          const on = highlightKey === k;
                           return (
                             <div key={k} className={`rounded-lg p-4 border ${on ? "border-blue-300 border-2 bg-blue-50" : "border-slate-200"}`}>
                               <div className="text-xs font-semibold text-slate-500">{k}</div>
@@ -779,10 +801,11 @@ async function toGmail() {
                       </div>
                       <div className="text-xs text-slate-400 mt-2">
                         {q.quote_no} · matched SKU {q.sku} · MOQ {q.moq?.toLocaleString()} pcs · {q.lead_days} days
-                        {ex.incoterm && ` · highlighted term is what the customer asked for`}
+                        {highlightKey && ` · highlighted term is what the customer asked for`}
                       </div>
                     </>
-                  )}
+                    );
+                  })()}
                 </Step>
               )}
 
@@ -876,6 +899,12 @@ function Quotations() {
   const [rows, setRows] = React.useState([]);
   const [open, setOpen] = React.useState(null);
   const [search, setSearch] = React.useState("");
+  const breakdownRef = React.useRef(null);
+
+  function openQuote(q) {
+    setOpen(q);
+    breakdownRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
   const shown = rows.filter((q) => {
     const s = search.toLowerCase();
     return !s || `${q.quote_no} ${q.company} ${q.product} ${q.destination} ${q.status}`.toLowerCase().includes(s);
@@ -933,7 +962,7 @@ function Quotations() {
                   <Td className="tabular-nums font-medium">USD {q.cif.toLocaleString()}</Td>
                   <Td><Badge cls={stint(q.status)}>{q.status}</Badge></Td>
                   <Td>
-                    <button onClick={() => setOpen(q)}
+                    <button onClick={() => openQuote(q)}
                       className="text-sm font-medium text-blue-600 hover:text-blue-700">Open</button>
                   </Td>
                 </tr>
@@ -949,6 +978,7 @@ function Quotations() {
       </Card>
 
       {open && (
+        <div ref={breakdownRef}>
         <Card title={`Price breakdown — ${open.quote_no}`}
           action={
             <div className="flex gap-2">
@@ -963,24 +993,32 @@ function Quotations() {
             </div>
           }>
           <div className="px-6 pb-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
               {[["EXW", open.exw, "Ex Works"],
+                ["FCA", open.fca, "Free Carrier"],
                 ["FOB", open.fob, "Free On Board"],
-                ["CIF", open.cif, `Cost, Insurance & Freight — ${open.destination}`]].map(([k, v, sub], i) => (
-                <div key={k} className={`rounded-xl p-5 border ${i === 2 ? "border-blue-200 bg-blue-50" : "border-slate-200"}`}>
-                  <div className="text-xs font-semibold text-slate-500">{k}</div>
-                  <div className={`text-2xl font-bold mt-1 ${i === 2 ? "text-blue-700" : "text-slate-900"}`}>
-                    USD {v.toLocaleString()}
+                ["CFR", open.cfr, "Cost and Freight"],
+                ["CIF", open.cif, `Cost, Insurance & Freight — ${open.destination}`],
+                ["CPT", open.cpt, "Carriage Paid To"],
+                ["CIP", open.cip, "Carriage and Insurance Paid To"]].map(([k, v, sub]) => {
+                const on = k === "CIF";
+                return (
+                  <div key={k} className={`rounded-xl p-5 border ${on ? "border-blue-200 bg-blue-50" : "border-slate-200"}`}>
+                    <div className="text-xs font-semibold text-slate-500">{k}</div>
+                    <div className={`text-2xl font-bold mt-1 ${on ? "text-blue-700" : "text-slate-900"}`}>
+                      USD {v.toLocaleString()}
+                    </div>
+                    <div className="text-xs text-slate-400 mt-0.5">{sub}</div>
                   </div>
-                  <div className="text-xs text-slate-400 mt-0.5">{sub}</div>
-                </div>
-              ))}
+                );
+              })}
             </div>
             <p className="text-xs text-slate-400">
               Calculated in Python from Price Settings. The language model never touches the arithmetic.
             </p>
           </div>
         </Card>
+        </div>
       )}
     </div>
   );
@@ -1382,12 +1420,57 @@ function PriceSettings() {
   const [saving, setSaving] = React.useState(false);
   const [msg, setMsg] = React.useState(null);
 
-  React.useEffect(() => {
-    getSettings().then(setV).catch(() => {});
+  const [freightAdding, setFreightAdding] = React.useState(false);
+  const [freightSaving, setFreightSaving] = React.useState(false);
+  const [freightErr, setFreightErr] = React.useState(null);
+  const [freightForm, setFreightForm] = React.useState({
+    destination: "", port: "", cost: "", transit: "",
+  });
+
+  const loadFreight = React.useCallback(() => {
     getFreight().then(setFreight).catch(() => {});
   }, []);
 
+  React.useEffect(() => {
+    getSettings().then(setV).catch(() => {});
+    loadFreight();
+  }, [loadFreight]);
+
   const set = (k) => (x) => setV((s) => ({ ...s, [k]: x }));
+
+  const setFreightField = (k) => (x) => setFreightForm((f) => ({ ...f, [k]: x }));
+
+  function resetFreightForm() {
+    setFreightForm({ destination: "", port: "", cost: "", transit: "" });
+    setFreightAdding(false);
+    setFreightErr(null);
+  }
+
+  async function addFreight() {
+    if (!freightForm.destination.trim() || !freightForm.cost) {
+      setFreightErr("Destination and freight cost are required.");
+      return;
+    }
+    setFreightSaving(true);
+    setFreightErr(null);
+    const r = await createFreight({
+      destination: freightForm.destination.trim(),
+      port: freightForm.port.trim() || null,
+      cost_usd: parseFloat(freightForm.cost),
+      transit_days: freightForm.transit ? parseInt(freightForm.transit, 10) : null,
+    });
+    setFreightSaving(false);
+    if (r.error) { setFreightErr(r.error); return; }
+    resetFreightForm();
+    loadFreight();
+  }
+
+  async function removeFreight(destination) {
+    if (!window.confirm(`Delete freight for ${destination}?`)) return;
+    const r = await deleteFreight(destination);
+    if (r.error) { setFreightErr(r.error); return; }
+    loadFreight();
+  }
 
   const save = async () => {
     setSaving(true);
@@ -1442,11 +1525,54 @@ function PriceSettings() {
         </div>
       </Card>
 
-      <Card title="Freight by destination" className="lg:col-span-2">
+      <Card title="Freight by destination" className="lg:col-span-2"
+        action={
+          <button onClick={() => freightAdding ? resetFreightForm() : setFreightAdding(true)}
+            className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700">
+            {freightAdding ? "Cancel" : "Add destination"}
+          </button>
+        }>
+        {freightErr && (
+          <div className="mx-6 mt-4 p-3 rounded-lg bg-red-50 border border-red-100 text-sm text-red-700">
+            {freightErr}
+          </div>
+        )}
+
+        {freightAdding && (
+          <div className="px-6 py-5 border-b border-slate-100 bg-slate-50/50">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1.5">Destination *</label>
+                <input list="country-options" value={freightForm.destination}
+                  onChange={(e) => setFreightField("destination")(e.target.value)}
+                  placeholder="Select or type a country"
+                  className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm
+                             focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500" />
+                <datalist id="country-options">
+                  {COUNTRY_OPTIONS.map((c) => <option key={c} value={c} />)}
+                </datalist>
+              </div>
+              <Field label="Port" value={freightForm.port} onChange={setFreightField("port")} />
+              <Field label="Freight cost (USD) *" value={freightForm.cost} onChange={setFreightField("cost")} />
+              <Field label="Transit (days)" value={freightForm.transit} onChange={setFreightField("transit")} />
+            </div>
+            <div className="flex gap-2 mt-4">
+              <button onClick={addFreight} disabled={freightSaving}
+                className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:bg-slate-300">
+                {freightSaving ? "Saving..." : "Save destination"}
+              </button>
+              <button onClick={resetFreightForm}
+                className="px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-600 hover:bg-slate-50">
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead className="border-y border-slate-100">
-              <tr><Th>Destination</Th><Th>Port</Th><Th>Cost</Th><Th>Transit</Th></tr>
+              <tr><Th>Destination</Th><Th>Port</Th><Th>Cost</Th><Th>Transit</Th><Th /></tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {freight.map((f) => (
@@ -1455,10 +1581,19 @@ function PriceSettings() {
                   <Td>{f.port || "—"}</Td>
                   <Td className="tabular-nums">USD {f.cost_usd.toLocaleString()}</Td>
                   <Td className="text-slate-500">{f.transit_days ? `${f.transit_days} days` : "—"}</Td>
+                  <Td>
+                    <button onClick={() => removeFreight(f.destination)}
+                      className="text-sm font-medium text-red-600 hover:text-red-700">
+                      Delete
+                    </button>
+                  </Td>
                 </tr>
               ))}
             </tbody>
           </table>
+          {freight.length === 0 && (
+            <div className="py-16 text-center text-sm text-slate-400">No destinations yet.</div>
+          )}
         </div>
         <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-between gap-4">
           <div className="text-xs text-slate-400">
@@ -1469,6 +1604,37 @@ function PriceSettings() {
                        hover:bg-blue-700 disabled:bg-slate-300 shrink-0">
             {saving ? "Saving…" : "Save settings"}
           </button>
+        </div>
+      </Card>
+
+      <Card title="Incoterms 說明" className="lg:col-span-2">
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="border-y border-slate-100">
+              <tr><Th>Incoterm</Th><Th>中文名稱</Th><Th>計算方式</Th><Th>說明</Th></tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {[
+                ["EXW", "工廠交貨", "成本 ÷ (1 − 毛利率)", "賣方於工廠交貨，其後所有費用與風險由買方負擔。"],
+                ["FCA", "貨交運人", "EXW ＋ 出口地手續費的一半", "賣方在指定地點將貨物交給買方指定的運送人，並完成出口清關。"],
+                ["FOB", "船上交貨", "EXW ＋ 出口地手續費", "賣方負責將貨物裝上買方指定的船隻，之後風險轉移給買方。"],
+                ["CFR", "運費在內", "FOB ＋ 運費", "賣方負擔到目的港的運費，但不含保險，風險於裝船後轉移。"],
+                ["CIF", "運保費在內", "FOB ＋ 運費 ＋ 保險", "賣方負擔到目的港的運費與保險，風險於裝船後轉移。"],
+                ["CPT", "運費付訖", "EXW ＋ 運費", "適用任何運輸方式，賣方負擔到指定地點的運費，不含保險。"],
+                ["CIP", "運保費付訖", "EXW ＋ 運費 ＋ 保險", "適用任何運輸方式，賣方負擔到指定地點的運費與保險。"],
+              ].map(([term, name, formula, desc]) => (
+                <tr key={term} className="hover:bg-slate-50">
+                  <Td className="font-mono text-xs font-semibold text-slate-900">{term}</Td>
+                  <Td className="font-medium text-slate-900">{name}</Td>
+                  <Td className="text-slate-500">{formula}</Td>
+                  <Td className="text-slate-500">{desc}</Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="px-6 py-4 border-t border-slate-100 text-xs text-slate-400">
+          DAP、DPU、DDP、FAS 涉及目的地當地運輸、關稅或卸貨費用，系統沒有這些資料，無法自動試算，請人工報價。
         </div>
       </Card>
     </div>

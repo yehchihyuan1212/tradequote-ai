@@ -128,3 +128,17 @@ export async function deleteProduct(sku) {
   const r = await fetch(`${BASE}/products/${sku}`, { method: "DELETE" });
   return r.json();
 }
+
+export async function createFreight(data) {
+  const r = await fetch(`${BASE}/freight`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  return r.json();
+}
+
+export async function deleteFreight(destination) {
+  const r = await fetch(`${BASE}/freight/${encodeURIComponent(destination)}`, { method: "DELETE" });
+  return r.json();
+}

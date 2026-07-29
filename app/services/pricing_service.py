@@ -12,6 +12,9 @@ class PriceSettings:
 
 DEFAULT_FREIGHT = 500.0
 
+# 涉及目的地內陸運費或進口關稅，系統沒有這些資料，不計算。
+UNSUPPORTED_INCOTERMS = {"DAP", "DPU", "DDP", "FAS"}
+
 PORT_TO_COUNTRY = {
     "osaka": "Japan", "tokyo": "Japan", "yokohama": "Japan", "kobe": "Japan",
     "nagoya": "Japan",
@@ -42,7 +45,10 @@ def normalise_destination(d):
 
 def calculate(unit_price: float, qty: int, destination: str,
               s: PriceSettings, freight_lookup=None) -> dict:
-    """計算 EXW / FOB / CIF。
+    """計算 EXW / FCA / FOB / CFR / CIF / CPT / CIP。
+
+    DAP、DPU、DDP、FAS 涉及目的地內陸運費或進口關稅，系統沒有這些資料，
+    不在計算範圍內（見 UNSUPPORTED_INCOTERMS）。
 
     freight_lookup: 可傳入一個 {國家: 運費} 的字典，通常來自資料庫。
                     沒傳就用預設運費。
@@ -54,15 +60,18 @@ def calculate(unit_price: float, qty: int, destination: str,
 
     cost = unit_price * qty
     exw = cost / (1 - s.profit_margin)
+    fca = exw + s.local_charges / 2
     fob = exw + s.local_charges
+    cfr = fob + freight
     cif = fob + freight + s.insurance
+    cpt = exw + freight
+    cip = exw + freight + s.insurance
 
-    return {
-        "cost": round(cost, 2),
-        "exw": round(exw, 2),
-        "fob": round(fob, 2),
-        "cif": round(cif, 2),
-        "unit_cif": round(cif / qty, 4),
-        "freight": freight,
-        "destination": destination,
-    }
+    terms = {"exw": exw, "fca": fca, "fob": fob, "cfr": cfr,
+              "cif": cif, "cpt": cpt, "cip": cip}
+
+    result = {"cost": round(cost, 2), "freight": freight, "destination": destination}
+    for key, value in terms.items():
+        result[key] = round(value, 2)
+        result[f"unit_{key}"] = round(value / qty, 4)
+    return result

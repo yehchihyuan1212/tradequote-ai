@@ -111,8 +111,12 @@ class Quotation(Base):
 
     cost: Mapped[float] = mapped_column(Float)
     exw: Mapped[float] = mapped_column(Float)
+    fca: Mapped[float] = mapped_column(Float)
     fob: Mapped[float] = mapped_column(Float)
+    cfr: Mapped[float] = mapped_column(Float)
     cif: Mapped[float] = mapped_column(Float)
+    cpt: Mapped[float] = mapped_column(Float)
+    cip: Mapped[float] = mapped_column(Float)
     unit_cif: Mapped[float] = mapped_column(Float)
     margin_used: Mapped[float] = mapped_column(Float)
     freight_used: Mapped[float] = mapped_column(Float)

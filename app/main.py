@@ -42,6 +42,17 @@ def _status(e: Email) -> str:
     return LABELS.get(e.inquiry.status, e.inquiry.status.title())
 
 
+INCOTERM_KEYS = ("exw", "fca", "fob", "cfr", "cif", "cpt", "cip")
+
+
+def _quote_prices(q: Quotation) -> dict:
+    """把一筆 Quotation 的各 Incoterm 總價換成 compose_quotation_reply 要的
+    {term: total, unit_term: unit} 格式。"""
+    prices = {k: getattr(q, k) for k in INCOTERM_KEYS}
+    prices.update({f"unit_{k}": getattr(q, k) / q.quantity for k in INCOTERM_KEYS})
+    return prices
+
+
 @app.get("/")
 def root():
     return {"service": "TradeQuote AI", "docs": "/docs"}
@@ -125,8 +136,9 @@ def email_detail(message_id: str, db: Session = Depends(get_db)):
                 "quote_no": q.quote_no, "sku": q.product.sku,
                 "product": q.product.name, "quantity": q.quantity,
                 "destination": q.destination,
-                "cost": q.cost, "exw": q.exw, "fob": q.fob,
-                "cif": q.cif, "unit_cif": q.unit_cif,
+                "cost": q.cost, "exw": q.exw, "fca": q.fca, "fob": q.fob,
+                "cfr": q.cfr, "cif": q.cif, "cpt": q.cpt, "cip": q.cip,
+                "unit_cif": q.unit_cif,
                 "margin": q.margin_used, "freight": q.freight_used,
                 "moq": q.product.moq, "lead_days": q.product.lead_days,
             }
@@ -171,8 +183,9 @@ def products(db: Session = Depends(get_db)):
 def quotations(db: Session = Depends(get_db)):
     return [{"quote_no": q.quote_no, "company": q.inquiry.company,
              "product": q.product.name, "quantity": q.quantity,
-             "destination": q.destination, "exw": q.exw, "fob": q.fob,
-             "cif": q.cif, "status": q.status}
+             "destination": q.destination,
+             "exw": q.exw, "fca": q.fca, "fob": q.fob, "cfr": q.cfr,
+             "cif": q.cif, "cpt": q.cpt, "cip": q.cip, "status": q.status}
             for q in db.query(Quotation).order_by(Quotation.id.desc()).all()]
 
 
@@ -292,7 +305,41 @@ def freight(db: Session = Depends(get_db)):
     return [{"destination": f.destination, "port": f.port,
              "cost_usd": f.cost_usd, "transit_days": f.transit_days}
             for f in db.query(Freight).order_by(Freight.destination).all()]
-       
+
+
+class FreightIn(BaseModel):
+    destination: str
+    port: str | None = None
+    cost_usd: float
+    transit_days: int | None = None
+
+
+@app.post("/api/freight")
+def create_freight(payload: FreightIn, db: Session = Depends(get_db)):
+    from app.models import Freight
+    destination = payload.destination.strip()
+    if not destination:
+        return {"error": "Destination is required"}
+    if db.query(Freight).filter_by(destination=destination).first():
+        return {"error": f"{destination} already exists"}
+    f = Freight(destination=destination, port=payload.port,
+                cost_usd=payload.cost_usd, transit_days=payload.transit_days)
+    db.add(f)
+    db.commit()
+    return {"ok": True, "destination": f.destination}
+
+
+@app.delete("/api/freight/{destination}")
+def delete_freight(destination: str, db: Session = Depends(get_db)):
+    from app.models import Freight
+    f = db.query(Freight).filter_by(destination=destination).first()
+    if not f:
+        return {"error": "Not found"}
+    db.delete(f)
+    db.commit()
+    return {"ok": True}
+
+
 @app.get("/api/drafts")
 def list_drafts(db: Session = Depends(get_db)):
     rows = db.query(Draft).order_by(Draft.id.desc()).all()
@@ -323,8 +370,9 @@ def generate_draft(quote_no: str, db: Session = Depends(get_db)):
     email = inq.email
     body = compose_quotation_reply(
         contact=inq.contact, product=q.product.name, sku=q.product.sku,
-        qty=q.quantity, dest=q.destination, cif=q.cif, unit_cif=q.unit_cif,
+        qty=q.quantity, dest=q.destination, prices=_quote_prices(q),
         moq=q.product.moq, lead_days=q.product.lead_days,
+        incoterm=inq.incoterm,
     )
     d = Draft(
         quotation_id=q.id, inquiry_id=inq.id,
@@ -399,8 +447,12 @@ def recalculate(quote_no: str, db: Session = Depends(get_db)):
     calc = calculate(q.product.unit_price, q.quantity, q.destination, s)
     q.cost = calc["cost"]
     q.exw = calc["exw"]
+    q.fca = calc["fca"]
     q.fob = calc["fob"]
+    q.cfr = calc["cfr"]
     q.cif = calc["cif"]
+    q.cpt = calc["cpt"]
+    q.cip = calc["cip"]
     q.unit_cif = calc["unit_cif"]
     q.margin_used = s.profit_margin
     q.freight_used = calc["freight"]
@@ -408,7 +460,7 @@ def recalculate(quote_no: str, db: Session = Depends(get_db)):
     return {"ok": True, "cif": q.cif, "margin": q.margin_used} 
 
 @app.post("/api/inbox/sync")
-def sync_inbox(query: str = "from:chris990246@gmail.com", limit: int = 20,
+def sync_inbox(query: str = "is:unread", limit: int = 20,
                db: Session = Depends(get_db)):
     """抓 Gmail 新信 → AI 分析 → 算價 → 入庫。回傳新增數量。"""
     from app.services.ai_service import MODEL, analyse
@@ -507,8 +559,9 @@ def sync_inbox(query: str = "from:chris990246@gmail.com", limit: int = 20,
                 db.add(Quotation(
                     inquiry_id=inq.id, quote_no=f"Q-2026-{n:03d}",
                     product_id=p.id, quantity=qty, destination=calc["destination"],
-                    cost=calc["cost"], exw=calc["exw"], fob=calc["fob"],
-                    cif=calc["cif"], unit_cif=calc["unit_cif"],
+                    cost=calc["cost"], exw=calc["exw"], fca=calc["fca"], fob=calc["fob"],
+                    cfr=calc["cfr"], cif=calc["cif"], cpt=calc["cpt"], cip=calc["cip"],
+                    unit_cif=calc["unit_cif"],
                     margin_used=s.profit_margin, freight_used=calc["freight"],
                 ))
                 inq.status = "quoted"
@@ -695,8 +748,9 @@ def quote_from_email(message_id: str, db: Session = Depends(get_db)):
     q = Quotation(
         inquiry_id=i.id, quote_no=f"Q-2026-{n:03d}",
         product_id=p.id, quantity=qty, destination=calc["destination"],
-        cost=calc["cost"], exw=calc["exw"], fob=calc["fob"],
-        cif=calc["cif"], unit_cif=calc["unit_cif"],
+        cost=calc["cost"], exw=calc["exw"], fca=calc["fca"], fob=calc["fob"],
+        cfr=calc["cfr"], cif=calc["cif"], cpt=calc["cpt"], cip=calc["cip"],
+        unit_cif=calc["unit_cif"],
         margin_used=s.profit_margin, freight_used=calc["freight"],
     )
     db.add(q)
@@ -725,8 +779,9 @@ def draft_from_email(message_id: str, db: Session = Depends(get_db)):
 
     body = compose_quotation_reply(
         contact=i.contact, product=q.product.name, sku=q.product.sku,
-        qty=q.quantity, dest=q.destination, cif=q.cif, unit_cif=q.unit_cif,
+        qty=q.quantity, dest=q.destination, prices=_quote_prices(q),
         moq=q.product.moq, lead_days=q.product.lead_days,
+        incoterm=i.incoterm,
     )
     d = Draft(
         quotation_id=q.id, inquiry_id=i.id,
@@ -754,8 +809,9 @@ def regenerate_draft(draft_id: int, db: Session = Depends(get_db)):
 
     d.body = compose_quotation_reply(
         contact=i.contact, product=q.product.name, sku=q.product.sku,
-        qty=q.quantity, dest=q.destination, cif=q.cif, unit_cif=q.unit_cif,
+        qty=q.quantity, dest=q.destination, prices=_quote_prices(q),
         moq=q.product.moq, lead_days=q.product.lead_days,
+        incoterm=i.incoterm,
     )
     db.commit()
     return {"ok": True}
