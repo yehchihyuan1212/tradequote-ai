@@ -1,0 +1,11 @@
+後端
+cd ~/Desktop/tradequote-ai
+uv run uvicorn app.main:app --reload --port 8000
+前端
+cd ~/Desktop/tradequote-ai/frontend
+npm run dev
+重建資料庫
+cd ~/Desktop/tradequote-ai
+rm tradequote.db
+uv run python seed.py
+uv run python ingest.py

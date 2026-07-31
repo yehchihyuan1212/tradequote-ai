@@ -79,6 +79,58 @@ def _clean_company(v):
     v = _clean(v)
     return None if v and v.lower() in COUNTRIES else v
 
+
+def _resolve_customer(db, company, contact, sender_email, country):
+    """依公司名 > 聯絡人 > 寄件信箱的優先順序找出或建立客戶。
+
+    公司名沒擷取到時，用聯絡人姓名區分同一信箱底下的不同客戶——
+    常見於測試信，或同一個信箱代轉多間公司詢價的情況，避免把明明不同的
+    客戶都併成同一筆。真的兩者都沒有時才退回用寄件信箱本身當識別。
+    """
+    if company:
+        cust = db.query(Customer).filter_by(company=company).first()
+        if not cust:
+            cust = Customer(company=company, contact=contact,
+                             email=sender_email, country=country)
+            db.add(cust)
+            db.flush()
+        elif contact and not cust.contact:
+            cust.contact = contact
+    elif contact:
+        cust = db.query(Customer).filter_by(email=sender_email, contact=contact).first()
+        if not cust:
+            cust = Customer(company=contact, contact=contact,
+                             email=sender_email, country=country)
+            db.add(cust)
+            db.flush()
+    else:
+        cust = db.query(Customer).filter_by(email=sender_email, contact=None).first()
+        if not cust:
+            cust = Customer(company="New Customer", email=sender_email, country=country)
+            db.add(cust)
+            db.flush()
+
+    if country and not cust.country:
+        cust.country = country
+    return cust
+
+
+def _display_company(i: Inquiry) -> str:
+    """Inquiry 沒擷取到公司/聯絡人時的顯示名稱。
+
+    other 意圖多半是廣告信、系統通知，根本不是客戶詢價，直接顯示寄件者本身
+    讀到的名稱或信箱即可，不要顯示 New Customer——否則會跟真的詢價信但
+    找不到署名的情況混在一起，分不出哪個是真的潛在客戶。
+    """
+    if i.company:
+        return i.company
+    if i.contact:
+        return i.contact
+    if i.intent == "other":
+        return i.email.sender_name or i.email.sender_email
+    return i.email.customer.company if i.email.customer else i.email.sender_email
+
+
 def _freight_table(db):
     """從資料庫讀運費表，回傳 {國家: 費用}。"""
     from app.models import Freight
@@ -96,9 +148,8 @@ def inbox(archived: bool = False, db: Session = Depends(get_db)):
     return [{
         "message_id": e.message_id,
         "received": e.received_at,
-        "company": (e.inquiry.company if e.inquiry and e.inquiry.company
-                    else (e.inquiry.contact if e.inquiry and e.inquiry.contact
-                             else e.sender_email)),
+        "company": (_display_company(e.inquiry) if e.inquiry
+                    else (e.customer.company if e.customer else e.sender_email)),
         "email": e.sender_email,
         "subject": e.subject,
         "intent": e.inquiry.intent if e.inquiry else None,
@@ -163,7 +214,8 @@ def stats(db: Session = Depends(get_db)):
         "emails": db.query(Email).filter(Email.ignored_at.is_(None)).count(),
         "analysed": db.query(Inquiry).count(),
         "quotations": db.query(Quotation).count(),
-        "customers": db.query(Customer).count(),
+        "customers": db.query(Customer.id).join(Email, Email.customer_id == Customer.id)
+                       .filter(Email.ignored_at.is_(None)).distinct().count(),
         "unread": db.query(Email).filter(
             Email.viewed_at.is_(None), Email.archived_at.is_(None),
             Email.ignored_at.is_(None)).count(),
@@ -181,7 +233,7 @@ def products(db: Session = Depends(get_db)):
 
 @app.get("/api/quotations")
 def quotations(db: Session = Depends(get_db)):
-    return [{"quote_no": q.quote_no, "company": q.inquiry.company,
+    return [{"quote_no": q.quote_no, "company": _display_company(q.inquiry),
              "product": q.product.name, "quantity": q.quantity,
              "destination": q.destination,
              "exw": q.exw, "fca": q.fca, "fob": q.fob, "cfr": q.cfr,
@@ -260,11 +312,12 @@ def mark_viewed(message_id: str, db: Session = Depends(get_db)):
     return {"ok": True}
 
 class SettingsIn(BaseModel):
-    profit_margin: float
-    local_charges: float
-    insurance: float
-    bank_charges: float
-    usd_twd: float
+    profit_margin: float | None = None
+    local_charges: float | None = None
+    insurance: float | None = None
+    bank_charges: float | None = None
+    usd_twd: float | None = None
+    sync_limit: int | None = None
 
 
 @app.get("/api/settings")
@@ -280,6 +333,7 @@ def get_settings(db: Session = Depends(get_db)):
         "insurance": s.insurance,
         "bank_charges": s.bank_charges,
         "usd_twd": s.usd_twd,
+        "sync_limit": s.sync_limit,
         "updated_at": s.updated_at.strftime("%Y-%m-%d %H:%M"),
     }
 
@@ -290,11 +344,9 @@ def update_settings(payload: SettingsIn, db: Session = Depends(get_db)):
     if not s:
         s = PriceSetting()
         db.add(s)
-    s.profit_margin = payload.profit_margin
-    s.local_charges = payload.local_charges
-    s.insurance = payload.insurance
-    s.bank_charges = payload.bank_charges
-    s.usd_twd = payload.usd_twd
+    for field, value in payload.model_dump().items():
+        if value is not None:
+            setattr(s, field, value)
     db.commit()
     return {"ok": True, "updated_at": s.updated_at.strftime("%Y-%m-%d %H:%M")}
 
@@ -349,7 +401,7 @@ def list_drafts(db: Session = Depends(get_db)):
         "subject": d.subject,
         "body": d.body,
         "status": d.status,
-        "company": d.inquiry.company,
+        "company": _display_company(d.inquiry),
         "gmail_draft_id": d.gmail_draft_id,
         "updated_at": d.updated_at.strftime("%Y-%m-%d %H:%M"),
     } for d in rows]
@@ -460,7 +512,7 @@ def recalculate(quote_no: str, db: Session = Depends(get_db)):
     return {"ok": True, "cif": q.cif, "margin": q.margin_used} 
 
 @app.post("/api/inbox/sync")
-def sync_inbox(query: str = "is:unread", limit: int = 20,
+def sync_inbox(query: str = "is:unread", limit: int | None = None,
                db: Session = Depends(get_db)):
     """抓 Gmail 新信 → AI 分析 → 算價 → 入庫。回傳新增數量。"""
     from app.services.ai_service import MODEL, analyse
@@ -472,6 +524,7 @@ def sync_inbox(query: str = "is:unread", limit: int = 20,
         profit_margin=row.profit_margin, local_charges=row.local_charges,
         insurance=row.insurance, bank_charges=row.bank_charges, usd_twd=row.usd_twd,
     )
+    limit = limit or row.sync_limit
 
     def match_product(text):
         if not text:
@@ -518,21 +571,9 @@ def sync_inbox(query: str = "is:unread", limit: int = 20,
             continue
 
         company = _clean_company(r.get("company"))
+        contact = _clean(r.get("contact"))
         country = _clean(r.get("destination"))
-        cust = db.query(Customer).filter_by(company=company).first() if company else None
-        if not cust and company:
-            cust = Customer(company=company, email=m["sender_email"], country=country)
-            db.add(cust)
-            db.flush()
-        elif not cust:
-            cust = db.query(Customer).filter_by(email=m["sender_email"]).first()
-            if not cust:
-                cust = Customer(company=m["sender_email"],
-                                email=m["sender_email"], country=country)
-                db.add(cust)
-                db.flush()
-        if country and not cust.country:
-            cust.country = country
+        cust = _resolve_customer(db, company, contact, m["sender_email"], country)
         email.customer_id = cust.id
 
         inq = Inquiry(

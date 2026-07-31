@@ -1766,9 +1766,32 @@ function SettingsPage() {
   const [company, setCompany] = React.useState("Taiwan Electronics Co., Ltd.");
   const [signature, setSignature] = React.useState("Sales Department");
 
+  const [syncLimit, setSyncLimit] = React.useState("");
+  const [syncSaving, setSyncSaving] = React.useState(false);
+  const [syncMsg, setSyncMsg] = React.useState(null);
+
   React.useEffect(() => {
     getSystemInfo().then(setInfo).catch(() => {});
+    getSettings().then((s) => setSyncLimit(String(s.sync_limit))).catch(() => {});
   }, []);
+
+  async function saveSyncLimit() {
+    const n = parseInt(syncLimit, 10);
+    if (!n || n < 1) {
+      setSyncMsg("Enter a number of 1 or more.");
+      return;
+    }
+    setSyncSaving(true);
+    setSyncMsg(null);
+    try {
+      await saveSettings({ sync_limit: n });
+      setSyncMsg("Saved. The next inbox sync will use this limit.");
+    } catch {
+      setSyncMsg("Couldn't save. Check the backend is running.");
+    } finally {
+      setSyncSaving(false);
+    }
+  }
 
   const StatusRow = ({ label, sub, ok, okText, badText }) => (
     <div className="flex items-center justify-between p-4 rounded-lg border border-slate-200">
@@ -1823,6 +1846,21 @@ function SettingsPage() {
               </div>
             </>
           )}
+        </div>
+      </Card>
+
+      <Card title="Inbox sync">
+        <div className="px-6 pb-6 space-y-4">
+          <Field label="Emails per sync" value={syncLimit} onChange={setSyncLimit} type="number" />
+          <p className="text-xs text-slate-400">
+            How many emails "Sync inbox" fetches from Gmail each time it runs.
+          </p>
+          {syncMsg && <p className="text-xs text-slate-500">{syncMsg}</p>}
+          <button onClick={saveSyncLimit} disabled={syncSaving}
+            className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium
+                       hover:bg-blue-700 disabled:bg-slate-300">
+            {syncSaving ? "Saving…" : "Save"}
+          </button>
         </div>
       </Card>
     </div>

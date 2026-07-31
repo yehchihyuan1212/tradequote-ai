@@ -43,6 +43,7 @@ class PriceSetting(Base):
     insurance: Mapped[float] = mapped_column(Float, default=80.0)
     bank_charges: Mapped[float] = mapped_column(Float, default=35.0)
     usd_twd: Mapped[float] = mapped_column(Float, default=29.6)
+    sync_limit: Mapped[int] = mapped_column(Integer, default=20)
     updated_at: Mapped[datetime] = mapped_column(default=datetime.now,
                                                  onupdate=datetime.now)
 

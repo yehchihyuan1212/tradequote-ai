@@ -28,25 +28,36 @@ def clean_company(v):
     return v
 
 
-def get_or_create_customer(db, name, addr, country=None):
-    """公司名優先。沒有公司名時不建新客戶，只在同信箱下沿用既有的。"""
+def get_or_create_customer(db, name, contact, addr, country=None):
+    """依公司名 > 聯絡人 > 寄件信箱的優先順序找出或建立客戶。
+
+    公司名沒擷取到時，用聯絡人姓名區分同一信箱底下的不同客戶——常見於
+    測試信，或同一個信箱代轉多間公司詢價的情況，避免把不同客戶併成一筆。
+    真的兩者都沒有時才退回用寄件信箱本身當識別。
+    """
     if name:
         c = db.query(Customer).filter_by(company=name).first()
-        if c:
-            if country and not c.country:
-                c.country = country
-            return c
-        c = Customer(company=name, email=addr, country=country)
-        db.add(c)
-        db.flush()
-        return c
+        if not c:
+            c = Customer(company=name, contact=contact, email=addr, country=country)
+            db.add(c)
+            db.flush()
+        elif contact and not c.contact:
+            c.contact = contact
+    elif contact:
+        c = db.query(Customer).filter_by(email=addr, contact=contact).first()
+        if not c:
+            c = Customer(company=contact, contact=contact, email=addr, country=country)
+            db.add(c)
+            db.flush()
+    else:
+        c = db.query(Customer).filter_by(email=addr, contact=None).first()
+        if not c:
+            c = Customer(company="New Customer", email=addr, country=country)
+            db.add(c)
+            db.flush()
 
-    c = db.query(Customer).filter_by(email=addr).first()
-    if c:
-        return c
-    c = Customer(company=addr, email=addr, country=country)
-    db.add(c)
-    db.flush()
+    if country and not c.country:
+        c.country = country
     return c
 
 
@@ -112,8 +123,8 @@ def ingest(query="is:unread", limit=20):
         r = analyse(m["subject"], m["body"])
 
         email.customer_id = get_or_create_customer(
-            db, clean_company(r.get("company")), m["sender_email"],
-            clean(r.get("destination"))
+            db, clean_company(r.get("company")), clean(r.get("contact")),
+            m["sender_email"], clean(r.get("destination"))
         ).id
         inq = Inquiry(
             email_id=email.id,
