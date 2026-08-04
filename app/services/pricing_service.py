@@ -43,9 +43,12 @@ def normalise_destination(d):
     return PORT_TO_COUNTRY.get(key, d.strip())
 
 
-def calculate(unit_price: float, qty: int, destination: str,
-              s: PriceSettings, freight_lookup=None) -> dict:
-    """計算 EXW / FCA / FOB / CFR / CIF / CPT / CIP。
+def calculate_from_cost(cost: float, destination: str,
+                        s: PriceSettings, freight_lookup=None) -> dict:
+    """計算 EXW / FCA / FOB / CFR / CIF / CPT / CIP,吃已經算好的成本總額。
+
+    多品項報價（一封信要好幾樣產品）用這個：每個品項的 unit_price * qty 先加總
+    成一筆 cost,運費/保險/出口地手續費是整批貨算一次,不會每個品項各分攤一次。
 
     DAP、DPU、DDP、FAS 涉及目的地內陸運費或進口關稅，系統沒有這些資料，
     不在計算範圍內（見 UNSUPPORTED_INCOTERMS）。
@@ -58,7 +61,6 @@ def calculate(unit_price: float, qty: int, destination: str,
     table = freight_lookup or {}
     freight = table.get(destination, DEFAULT_FREIGHT)
 
-    cost = unit_price * qty
     exw = cost / (1 - s.profit_margin)
     fca = exw + s.local_charges / 2
     fob = exw + s.local_charges
@@ -73,5 +75,13 @@ def calculate(unit_price: float, qty: int, destination: str,
     result = {"cost": round(cost, 2), "freight": freight, "destination": destination}
     for key, value in terms.items():
         result[key] = round(value, 2)
-        result[f"unit_{key}"] = round(value / qty, 4)
+    return result
+
+
+def calculate(unit_price: float, qty: int, destination: str,
+              s: PriceSettings, freight_lookup=None) -> dict:
+    """單一品項版本：算 cost 後委派給 calculate_from_cost,並附上每個條件的 unit 單價。"""
+    result = calculate_from_cost(unit_price * qty, destination, s, freight_lookup)
+    for key in ("exw", "fca", "fob", "cfr", "cif", "cpt", "cip"):
+        result[f"unit_{key}"] = round(result[key] / qty, 4)
     return result

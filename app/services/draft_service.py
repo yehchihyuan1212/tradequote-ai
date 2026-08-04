@@ -6,44 +6,49 @@ INCOTERM_LABELS = {
 }
 
 
-def compose_quotation_reply(contact, product, sku, qty, dest, prices,
-                            moq, lead_days, incoterm=None, validity=30):
-    """prices: dict with exw/fca/fob/cfr/cif/cpt/cip and their unit_ prices
-    (see pricing_service.calculate). incoterm: what the customer asked for —
-    quoted directly if we can calculate it, otherwise falls back to FOB + CIF.
+def compose_quotation_reply(contact, items, dest, prices, incoterms=None, validity=30):
+    """items: list of {product, sku, quantity, unit_exw, moq, lead_days} — one entry
+    per requested product (see main._quote_items). prices: dict with exw/fca/fob/cfr/
+    cif/cpt/cip totals for the whole quote (see main._quote_prices) — freight/insurance
+    are quoted once for the whole shipment, not split per product. incoterms: every
+    term the customer asked for (a single email can ask for more than one, e.g. "FOB
+    and CIF pricing") — each one we can calculate gets its own total line; any that
+    fall in pricing_service.UNSUPPORTED_INCOTERMS get a note instead. Falls back to
+    FOB + CIF when nothing usable was requested.
     """
     greeting = contact or "Sir/Madam"
-    req = (incoterm or "").upper()
-    key = req.lower()
+    reqs = [t.upper() for t in (incoterms or []) if t]
+    supported = [t for t in reqs if t.lower() in INCOTERM_LABELS]
+    unsupported = [t for t in reqs if t in UNSUPPORTED_INCOTERMS]
 
-    if key in INCOTERM_LABELS:
-        price_lines = (
-            f"  Unit price  : USD {prices[f'unit_{key}']:.4f}\n"
-            f"  {INCOTERM_LABELS[key]} {dest}   : USD {prices[key]:,.2f}"
-        )
-    else:
-        note = ""
-        if req in UNSUPPORTED_INCOTERMS:
-            note = (f"  Note: you requested {req} terms. This involves destination-side duties/\n"
-                     f"  charges we do not have data for and cannot quote automatically — please\n"
-                     f"  contact us directly for {req} pricing.\n\n")
-        price_lines = (
-            f"{note}"
-            f"  FOB {dest}   : USD {prices['fob']:,.2f}  (unit USD {prices['unit_fob']:.4f})\n"
-            f"  CIF {dest}   : USD {prices['cif']:,.2f}  (unit USD {prices['unit_cif']:.4f})"
-        )
+    items_block = "\n\n".join(
+        f"  {it['product']} ({it['sku']})\n"
+        f"    Quantity    : {it['quantity']:,} pcs\n"
+        f"    Unit price  : USD {it['unit_exw']:.4f} (EXW)\n"
+        f"    MOQ         : {it['moq']:,} pcs · Lead time {it['lead_days']} days"
+        for it in items
+    )
+
+    shown = supported or ["FOB", "CIF"]
+    total_lines = "\n".join(
+        f"  {INCOTERM_LABELS[t.lower()]} {dest} total : USD {prices[t.lower()]:,.2f}"
+        for t in shown
+    )
+
+    note = ""
+    if unsupported:
+        terms_str = " / ".join(unsupported)
+        note = (f"  Note: you also asked about {terms_str} terms. This involves destination-side\n"
+                 f"  duties/charges we do not have data for and cannot quote automatically — please\n"
+                 f"  contact us directly for {terms_str} pricing.\n\n")
 
     return f"""Dear {greeting},
 
-Thank you for your inquiry regarding {product}.
+Thank you for your inquiry. We are pleased to quote as follows:
 
-We are pleased to quote as follows:
+{items_block}
 
-  Product     : {product} ({sku})
-  Quantity    : {qty:,} pcs
-{price_lines}
-  MOQ         : {moq:,} pcs
-  Lead time   : {lead_days} days after order confirmation
+{note}{total_lines}
 
 This quotation is valid for {validity} days. Please let us know if you
 would like to adjust the quantity or trade terms.

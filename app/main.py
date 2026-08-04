@@ -1,11 +1,13 @@
-﻿from fastapi import Depends, FastAPI
+﻿import json
+
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Customer, Email, Inquiry, Product, Quotation
+from app.models import Customer, Email, Inquiry, Product, Quotation, QuotationItem
 from app.services.ai_service import analyse
 from datetime import datetime
 from app.models import Customer, Draft, Email, Inquiry, PriceSetting, Product, Quotation
@@ -22,7 +24,7 @@ app = FastAPI(title="TradeQuote AI")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -46,11 +48,22 @@ INCOTERM_KEYS = ("exw", "fca", "fob", "cfr", "cif", "cpt", "cip")
 
 
 def _quote_prices(q: Quotation) -> dict:
-    """把一筆 Quotation 的各 Incoterm 總價換成 compose_quotation_reply 要的
-    {term: total, unit_term: unit} 格式。"""
-    prices = {k: getattr(q, k) for k in INCOTERM_KEYS}
-    prices.update({f"unit_{k}": getattr(q, k) / q.quantity for k in INCOTERM_KEYS})
-    return prices
+    """把一筆 Quotation 的各 Incoterm 總價（整批貨，可能含多個品項）整理成
+    compose_quotation_reply 要的格式。"""
+    return {k: getattr(q, k) for k in INCOTERM_KEYS}
+
+
+def _quote_items(q: Quotation) -> list:
+    """把 Quotation 底下的品項轉成草稿模板要的格式，含每個品項的 EXW 單價。"""
+    margin = q.margin_used or 0
+    items = q.items or [QuotationItem(product=q.product, quantity=q.quantity,
+                                       unit_price=q.product.unit_price)]
+    return [{
+        "product": item.product.name, "sku": item.product.sku,
+        "quantity": item.quantity,
+        "unit_exw": round(item.unit_price / (1 - margin), 4) if margin < 1 else 0,
+        "moq": item.product.moq, "lead_days": item.product.lead_days,
+    } for item in items]
 
 
 @app.get("/")
@@ -137,6 +150,110 @@ def _freight_table(db):
     return {f.destination: f.cost_usd for f in db.query(Freight).all()}
 
 
+def _match_product(db, text):
+    """完全符合名稱/別名優先，再來子字串比對，最後才是詞彙重疊。
+
+    完全符合優先是必要的：例如查詢字串是「Charger」，Power Bank 的別名
+    "portable charger" 用子字串比對也會命中（"charger" in "portable charger"），
+    先做完全符合可以避免這種別名子字串誤配到別的商品。
+    """
+    if not text:
+        return None
+    n = text.lower().strip()
+    products = db.query(Product).all()
+
+    def names_of(p):
+        names = [p.name.lower()]
+        if p.aliases:
+            names += [a.strip().lower() for a in p.aliases.split(",")]
+        return names
+
+    for p in products:
+        if n in names_of(p):
+            return p
+    for p in products:
+        if any(c in n or n in c for c in names_of(p)):
+            return p
+
+    words = {w.strip("-,.").rstrip("s") for w in n.split()}
+    best, score = None, 0
+    for p in products:
+        target = {w.rstrip("s") for w in p.name.lower().split()}
+        hits = len(words & target)
+        if hits > score:
+            best, score = p, hits
+    return best if score else None
+
+
+def _parse_items(inq: Inquiry) -> list:
+    """把 Inquiry 存的 items_json 解析成 [{"product": str, "quantity": int|None}, ...]。
+    舊資料沒有 items_json 時，退回用 product_text/quantity 包成一個品項。"""
+    if inq.items_json:
+        try:
+            items = json.loads(inq.items_json)
+            if items:
+                return items
+        except (json.JSONDecodeError, TypeError):
+            pass
+    if inq.product_text:
+        return [{"product": inq.product_text, "quantity": inq.quantity}]
+    return []
+
+
+def _parse_incoterms(inq: Inquiry) -> list:
+    """把 Inquiry 存的 incoterms_json 解析成大寫字串清單（客戶可能一次問好幾種
+    條件，例如「FOB and CIF pricing」）。舊資料沒有 incoterms_json 時，退回用
+    單一 incoterm 欄位包成一個元素的清單。"""
+    if inq.incoterms_json:
+        try:
+            terms = json.loads(inq.incoterms_json)
+            if terms:
+                return terms
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return [inq.incoterm] if inq.incoterm else []
+
+
+def _generate_quotation(db, inq: Inquiry, s, freight_lookup=None):
+    """把一封詢價信裡所有品項各自比對商品、算成本，合成一張報價單——多個
+    品項共用同一個 quote_no，運費/保險/出口地手續費只算一次（整批貨的費用，
+    不會每個品項各分攤一次）。一個品項都比對不到商品就回傳 None。"""
+    from app.services.pricing_service import calculate_from_cost
+
+    matched = []
+    for item in _parse_items(inq):
+        p = _match_product(db, item.get("product"))
+        if not p:
+            continue
+        qty = item.get("quantity") or p.moq
+        matched.append((p, qty))
+
+    if not matched:
+        return None
+
+    total_cost = sum(p.unit_price * qty for p, qty in matched)
+    dest = inq.destination or "Japan"
+    calc = calculate_from_cost(total_cost, dest, s, freight_lookup)
+
+    first_p, first_qty = matched[0]
+    total_qty = sum(qty for _, qty in matched)
+    n = db.query(Quotation).count() + 1
+    q = Quotation(
+        inquiry_id=inq.id, quote_no=f"Q-2026-{n:03d}",
+        product_id=first_p.id, quantity=first_qty, destination=calc["destination"],
+        cost=calc["cost"], exw=calc["exw"], fca=calc["fca"], fob=calc["fob"],
+        cfr=calc["cfr"], cif=calc["cif"], cpt=calc["cpt"], cip=calc["cip"],
+        unit_cif=round(calc["cif"] / total_qty, 4) if total_qty else 0,
+        margin_used=s.profit_margin, freight_used=calc["freight"],
+    )
+    db.add(q)
+    db.flush()
+    for p, qty in matched:
+        db.add(QuotationItem(quotation_id=q.id, product_id=p.id, quantity=qty,
+                              unit_price=p.unit_price, cost=p.unit_price * qty))
+    return q
+
+
 @app.get("/api/inbox")
 def inbox(archived: bool = False, db: Session = Depends(get_db)):
     q = db.query(Email).filter(Email.ignored_at.is_(None))
@@ -178,7 +295,9 @@ def email_detail(message_id: str, db: Session = Depends(get_db)):
             "intent": i.intent, "confidence": i.confidence,
             "company": i.company, "contact": i.contact,
             "product": i.product_text, "quantity": i.quantity,
+            "items": _parse_items(i),
             "destination": i.destination, "incoterm": i.incoterm,
+            "incoterms": _parse_incoterms(i),
             "summary": i.summary, "model": i.model_name,
         }
         if i.quotation:
@@ -192,6 +311,9 @@ def email_detail(message_id: str, db: Session = Depends(get_db)):
                 "unit_cif": q.unit_cif,
                 "margin": q.margin_used, "freight": q.freight_used,
                 "moq": q.product.moq, "lead_days": q.product.lead_days,
+                "items": [{"sku": it.product.sku, "product": it.product.name,
+                           "quantity": it.quantity, "unit_price": it.unit_price,
+                           "cost": it.cost} for it in q.items],
             }
 
         from app.models import Draft
@@ -233,12 +355,29 @@ def products(db: Session = Depends(get_db)):
 
 @app.get("/api/quotations")
 def quotations(db: Session = Depends(get_db)):
-    return [{"quote_no": q.quote_no, "company": _display_company(q.inquiry),
-             "product": q.product.name, "quantity": q.quantity,
-             "destination": q.destination,
-             "exw": q.exw, "fca": q.fca, "fob": q.fob, "cfr": q.cfr,
-             "cif": q.cif, "cpt": q.cpt, "cip": q.cip, "status": q.status}
-            for q in db.query(Quotation).order_by(Quotation.id.desc()).all()]
+    rows = []
+    for q in db.query(Quotation).order_by(Quotation.id.desc()).all():
+        i = q.inquiry
+        rows.append({
+            "quote_no": q.quote_no, "company": _display_company(i),
+            "product": q.product.name, "quantity": q.quantity,
+            "incoterms": _parse_incoterms(i),
+            "items": [{"sku": it.product.sku, "product": it.product.name,
+                       "quantity": it.quantity, "unit_price": it.unit_price,
+                       "cost": it.cost} for it in q.items],
+            "destination": q.destination,
+            "exw": q.exw, "fca": q.fca, "fob": q.fob, "cfr": q.cfr,
+            "cif": q.cif, "cpt": q.cpt, "cip": q.cip, "status": q.status,
+            "extraction": {
+                "confidence": i.confidence, "company": i.company, "contact": i.contact,
+                "destination": i.destination, "incoterms": _parse_incoterms(i),
+                "summary": i.summary, "model": i.model_name,
+                "received": i.email.received_at, "sender_email": i.email.sender_email,
+                "subject": i.email.subject,
+                "items": _parse_items(i),
+            },
+        })
+    return rows
 
 
 @app.get("/api/customers")
@@ -280,8 +419,10 @@ def customer_detail(customer_id: int, db: Session = Depends(get_db)):
             "intent": i.intent if i else None,
             "status": _status(e),
             "quote_no": q.quote_no if q else None,
-            "product": q.product.name if q else (i.product_text if i else None),
-            "quantity": q.quantity if q else (i.quantity if i else None),
+            "product": (", ".join(it.product.name for it in q.items) if q and q.items
+                        else (q.product.name if q else (i.product_text if i else None))),
+            "quantity": (sum(it.quantity for it in q.items) if q and q.items
+                        else (q.quantity if q else (i.quantity if i else None))),
             "destination": q.destination if q else (i.destination if i else None),
             "cif": q.cif if q else None,
         })
@@ -421,10 +562,8 @@ def generate_draft(quote_no: str, db: Session = Depends(get_db)):
     inq = q.inquiry
     email = inq.email
     body = compose_quotation_reply(
-        contact=inq.contact, product=q.product.name, sku=q.product.sku,
-        qty=q.quantity, dest=q.destination, prices=_quote_prices(q),
-        moq=q.product.moq, lead_days=q.product.lead_days,
-        incoterm=inq.incoterm,
+        contact=inq.contact, items=_quote_items(q), dest=q.destination,
+        prices=_quote_prices(q), incoterms=_parse_incoterms(inq),
     )
     d = Draft(
         quotation_id=q.id, inquiry_id=inq.id,
@@ -481,8 +620,8 @@ def send_to_gmail(draft_id: int, db: Session = Depends(get_db)):
     return {"ok": True, "gmail_draft_id": gmail_id}  
 @app.post("/api/quotations/{quote_no}/recalculate")
 def recalculate(quote_no: str, db: Session = Depends(get_db)):
-    """用目前的 Price Settings 重算,更新快照。"""
-    from app.services.pricing_service import PriceSettings, calculate
+    """用目前的 Price Settings 重算,更新快照（含每個品項用目前的產品單價重算）。"""
+    from app.services.pricing_service import PriceSettings, calculate_from_cost
 
     q = db.query(Quotation).filter_by(quote_no=quote_no).first()
     if not q:
@@ -496,7 +635,15 @@ def recalculate(quote_no: str, db: Session = Depends(get_db)):
         bank_charges=row.bank_charges,
         usd_twd=row.usd_twd,
     )
-    calc = calculate(q.product.unit_price, q.quantity, q.destination, s)
+    total_cost = 0.0
+    total_qty = 0
+    for it in q.items:
+        it.unit_price = it.product.unit_price
+        it.cost = it.unit_price * it.quantity
+        total_cost += it.cost
+        total_qty += it.quantity
+
+    calc = calculate_from_cost(total_cost, q.destination, s)
     q.cost = calc["cost"]
     q.exw = calc["exw"]
     q.fca = calc["fca"]
@@ -505,11 +652,11 @@ def recalculate(quote_no: str, db: Session = Depends(get_db)):
     q.cif = calc["cif"]
     q.cpt = calc["cpt"]
     q.cip = calc["cip"]
-    q.unit_cif = calc["unit_cif"]
+    q.unit_cif = round(calc["cif"] / total_qty, 4) if total_qty else 0
     q.margin_used = s.profit_margin
     q.freight_used = calc["freight"]
     db.commit()
-    return {"ok": True, "cif": q.cif, "margin": q.margin_used} 
+    return {"ok": True, "cif": q.cif, "margin": q.margin_used}
 
 @app.post("/api/inbox/sync")
 def sync_inbox(query: str = "is:unread", limit: int | None = None,
@@ -517,7 +664,7 @@ def sync_inbox(query: str = "is:unread", limit: int | None = None,
     """抓 Gmail 新信 → AI 分析 → 算價 → 入庫。回傳新增數量。"""
     from app.services.ai_service import MODEL, analyse
     from app.services.gmail_service import fetch_new
-    from app.services.pricing_service import PriceSettings, calculate
+    from app.services.pricing_service import PriceSettings
 
     row = db.query(PriceSetting).first()
     s = PriceSettings(
@@ -525,25 +672,6 @@ def sync_inbox(query: str = "is:unread", limit: int | None = None,
         insurance=row.insurance, bank_charges=row.bank_charges, usd_twd=row.usd_twd,
     )
     limit = limit or row.sync_limit
-
-    def match_product(text):
-        if not text:
-            return None
-        n = text.lower()
-        for p in db.query(Product).all():
-            names = [p.name.lower()]
-            if p.aliases:
-                names += [a.strip().lower() for a in p.aliases.split(",")]
-            if any(c in n or n in c for c in names):
-                return p
-        words = {w.strip("-,.").rstrip("s") for w in n.split()}
-        best, score = None, 0
-        for p in db.query(Product).all():
-            target = {w.rstrip("s") for w in p.name.lower().split()}
-            hits = len(words & target)
-            if hits > score:
-                best, score = p, hits
-        return best if score else None
 
     new = 0
     try:
@@ -583,29 +711,16 @@ def sync_inbox(query: str = "is:unread", limit: int | None = None,
                      "after_sales", "payment", "other"} else "other"),
             confidence=r.get("confidence", 0), company=r.get("company"),
             contact=r.get("contact"), product_text=r.get("product"),
-            quantity=r.get("quantity"), destination=r.get("destination"),
-            incoterm=r.get("incoterm"), summary=r.get("summary"), model_name=MODEL,
+            quantity=r.get("quantity"), items_json=json.dumps(r.get("items") or []),
+            destination=r.get("destination"),
+            incoterm=r.get("incoterm"), incoterms_json=json.dumps(r.get("incoterms") or []),
+            summary=r.get("summary"), model_name=MODEL,
         )
         db.add(inq)
         db.flush()
 
-
-        if inq.intent == "quotation":
-            p = match_product(inq.product_text)
-            if p:
-                qty = inq.quantity or p.moq
-                dest = inq.destination or "Japan"
-                calc = calculate(p.unit_price, qty, dest, s)
-                n = db.query(Quotation).count() + 1
-                db.add(Quotation(
-                    inquiry_id=inq.id, quote_no=f"Q-2026-{n:03d}",
-                    product_id=p.id, quantity=qty, destination=calc["destination"],
-                    cost=calc["cost"], exw=calc["exw"], fca=calc["fca"], fob=calc["fob"],
-                    cfr=calc["cfr"], cif=calc["cif"], cpt=calc["cpt"], cip=calc["cip"],
-                    unit_cif=calc["unit_cif"],
-                    margin_used=s.profit_margin, freight_used=calc["freight"],
-                ))
-                inq.status = "quoted"
+        if inq.intent == "quotation" and _generate_quotation(db, inq, s):
+            inq.status = "quoted"
 
         db.commit()
         new += 1
@@ -740,7 +855,7 @@ def export_excel(db: Session = Depends(get_db)):
 @app.post("/api/inbox/{message_id}/quote")
 def quote_from_email(message_id: str, db: Session = Depends(get_db)):
     """對這封信產生報價。已有報價就直接回傳。"""
-    from app.services.pricing_service import PriceSettings, calculate
+    from app.services.pricing_service import PriceSettings
 
     e = db.query(Email).filter_by(message_id=message_id).first()
     if not e or not e.inquiry:
@@ -753,48 +868,15 @@ def quote_from_email(message_id: str, db: Session = Depends(get_db)):
     if i.intent != "quotation":
         return {"error": "This email is not a quotation request"}
 
-    def match(text):
-        if not text:
-            return None
-        n = text.lower()
-        for p in db.query(Product).all():
-            names = [p.name.lower()]
-            if p.aliases:
-                names += [a.strip().lower() for a in p.aliases.split(",")]
-            if any(c in n or n in c for c in names):
-                return p
-        words = {w.strip("-,.").rstrip("s") for w in n.split()}
-        best, score = None, 0
-        for p in db.query(Product).all():
-            target = {w.rstrip("s") for w in p.name.lower().split()}
-            hits = len(words & target)
-            if hits > score:
-                best, score = p, hits
-        return best if score else None
-
-    p = match(i.product_text)
-    if not p:
-        return {"error": f"No product in the catalogue matches '{i.product_text}'"}
-
     row = db.query(PriceSetting).first()
     s = PriceSettings(
         profit_margin=row.profit_margin, local_charges=row.local_charges,
         insurance=row.insurance, bank_charges=row.bank_charges, usd_twd=row.usd_twd,
     )
-    qty = i.quantity or p.moq
-    dest = i.destination or "Japan"
-    calc = calculate(p.unit_price, qty, dest, s)
-    n = db.query(Quotation).count() + 1
+    q = _generate_quotation(db, i, s)
+    if not q:
+        return {"error": f"No product in the catalogue matches '{i.product_text}'"}
 
-    q = Quotation(
-        inquiry_id=i.id, quote_no=f"Q-2026-{n:03d}",
-        product_id=p.id, quantity=qty, destination=calc["destination"],
-        cost=calc["cost"], exw=calc["exw"], fca=calc["fca"], fob=calc["fob"],
-        cfr=calc["cfr"], cif=calc["cif"], cpt=calc["cpt"], cip=calc["cip"],
-        unit_cif=calc["unit_cif"],
-        margin_used=s.profit_margin, freight_used=calc["freight"],
-    )
-    db.add(q)
     i.status = "quoted"
     db.commit()
     return {"ok": True, "quote_no": q.quote_no}
@@ -819,10 +901,8 @@ def draft_from_email(message_id: str, db: Session = Depends(get_db)):
         return {"error": "Generate a quotation first"}
 
     body = compose_quotation_reply(
-        contact=i.contact, product=q.product.name, sku=q.product.sku,
-        qty=q.quantity, dest=q.destination, prices=_quote_prices(q),
-        moq=q.product.moq, lead_days=q.product.lead_days,
-        incoterm=i.incoterm,
+        contact=i.contact, items=_quote_items(q), dest=q.destination,
+        prices=_quote_prices(q), incoterms=_parse_incoterms(i),
     )
     d = Draft(
         quotation_id=q.id, inquiry_id=i.id,
@@ -849,10 +929,8 @@ def regenerate_draft(draft_id: int, db: Session = Depends(get_db)):
         return {"error": "No quotation attached to this draft"}
 
     d.body = compose_quotation_reply(
-        contact=i.contact, product=q.product.name, sku=q.product.sku,
-        qty=q.quantity, dest=q.destination, prices=_quote_prices(q),
-        moq=q.product.moq, lead_days=q.product.lead_days,
-        incoterm=i.incoterm,
+        contact=i.contact, items=_quote_items(q), dest=q.destination,
+        prices=_quote_prices(q), incoterms=_parse_incoterms(i),
     )
     db.commit()
     return {"ok": True}
@@ -914,6 +992,35 @@ def unarchive_email(message_id: str, db: Session = Depends(get_db)):
     if not e:
         return {"error": "Not found"}
     e.archived_at = None
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/inbox/{message_id}/delete")
+def delete_email(message_id: str, db: Session = Depends(get_db)):
+    """永久刪除一封信：清內容、保留 message_id 避免重新同步時又抓回來。
+
+    常見情境：Irrelevant 頁籤誤按 Keep（信件因此移到 Active），這裡讓使用者
+    在 Active 頁籤補救刪除。跟 purge_irrelevant 用一樣的「清內容留 message_id」
+    做法，但這裡不限定 intent，任何一封 Active 的信都能刪。
+    """
+    from app.models import Draft
+
+    e = db.query(Email).filter_by(message_id=message_id).first()
+    if not e:
+        return {"error": "Not found"}
+
+    if e.inquiry:
+        d = db.query(Draft).filter_by(inquiry_id=e.inquiry.id).first()
+        if d:
+            db.delete(d)
+        if e.inquiry.quotation:
+            db.delete(e.inquiry.quotation)
+        db.delete(e.inquiry)
+
+    e.body = ""
+    e.subject = e.subject or ""
+    e.ignored_at = datetime.now()
     db.commit()
     return {"ok": True}
 @app.get("/api/irrelevant")

@@ -1,91 +1,12 @@
+import json
+
 from app.database import SessionLocal, init_db
-from app.models import Customer, Email, Freight, Inquiry, PriceSetting, Product, Quotation
+from app.main import _clean as clean, _clean_company as clean_company
+from app.main import _resolve_customer, _generate_quotation, _freight_table
+from app.models import Email, Inquiry, PriceSetting
 from app.services.ai_service import MODEL, analyse
 from app.services.gmail_service import fetch_new
-from app.services.pricing_service import PriceSettings, calculate
-from datetime import datetime
-
-def clean(v):
-    """模型偶爾會回字串 'null' 或 'none'，當成空值處理。"""
-    if not v or not isinstance(v, str):
-        return None
-    s = v.strip()
-    return None if s.lower() in {"null", "none", "n/a", "-", ""} else s
-
-COUNTRIES = {"italy", "japan", "korea", "south korea", "china", "taiwan",
-             "germany", "france", "spain", "egypt", "australia", "mexico",
-             "brazil", "poland", "uae", "usa", "united states", "uk",
-             "united kingdom", "india", "vietnam", "thailand", "singapore",
-             "malaysia", "indonesia", "canada", "netherlands", "belgium",
-             "turkey", "saudi arabia", "russia", "hong kong"}
-
-
-def clean_company(v):
-    """公司名不該是國家名。"""
-    v = clean(v)
-    if v and v.lower().strip() in COUNTRIES:
-        return None
-    return v
-
-
-def get_or_create_customer(db, name, contact, addr, country=None):
-    """依公司名 > 聯絡人 > 寄件信箱的優先順序找出或建立客戶。
-
-    公司名沒擷取到時，用聯絡人姓名區分同一信箱底下的不同客戶——常見於
-    測試信，或同一個信箱代轉多間公司詢價的情況，避免把不同客戶併成一筆。
-    真的兩者都沒有時才退回用寄件信箱本身當識別。
-    """
-    if name:
-        c = db.query(Customer).filter_by(company=name).first()
-        if not c:
-            c = Customer(company=name, contact=contact, email=addr, country=country)
-            db.add(c)
-            db.flush()
-        elif contact and not c.contact:
-            c.contact = contact
-    elif contact:
-        c = db.query(Customer).filter_by(email=addr, contact=contact).first()
-        if not c:
-            c = Customer(company=contact, contact=contact, email=addr, country=country)
-            db.add(c)
-            db.flush()
-    else:
-        c = db.query(Customer).filter_by(email=addr, contact=None).first()
-        if not c:
-            c = Customer(company="New Customer", email=addr, country=country)
-            db.add(c)
-            db.flush()
-
-    if country and not c.country:
-        c.country = country
-    return c
-
-
-def match_product(db, text):
-    """先比對名稱，再比對別名。"""
-    if not text:
-        return None
-    n = text.lower()
-    for p in db.query(Product).all():
-        names = [p.name.lower()]
-        if p.aliases:
-            names += [a.strip().lower() for a in p.aliases.split(",")]
-        for cand in names:
-            if cand in n or n in cand:
-                return p
-    words = {w.strip("-,.").rstrip("s") for w in n.split()}
-    best, score = None, 0
-    for p in db.query(Product).all():
-        target = {w.rstrip("s") for w in p.name.lower().split()}
-        hits = len(words & target)
-        if hits > score:
-            best, score = p, hits
-    return best if score else None
-
-
-def next_quote_no(db):
-    n = db.query(Quotation).count() + 1
-    return f"Q-2026-{n:03d}"
+from app.services.pricing_service import PriceSettings
 
 VALID_INTENTS = {"quotation", "sample_request", "delivery_followup",
                  "after_sales", "payment", "other"}
@@ -101,6 +22,7 @@ def ingest(query="is:unread", limit=20):
         bank_charges=settings_row.bank_charges,
         usd_twd=settings_row.usd_twd,
     )
+    freight_lookup = _freight_table(db)
 
     new, skipped = 0, 0
 
@@ -122,10 +44,11 @@ def ingest(query="is:unread", limit=20):
 
         r = analyse(m["subject"], m["body"])
 
-        email.customer_id = get_or_create_customer(
-            db, clean_company(r.get("company")), clean(r.get("contact")),
-            m["sender_email"], clean(r.get("destination"))
-        ).id
+        company = clean_company(r.get("company"))
+        contact = clean(r.get("contact"))
+        country = clean(r.get("destination"))
+        email.customer_id = _resolve_customer(db, company, contact, m["sender_email"], country).id
+
         inq = Inquiry(
             email_id=email.id,
             intent=(r.get("intent") if r.get("intent") in VALID_INTENTS else "other"),
@@ -134,34 +57,18 @@ def ingest(query="is:unread", limit=20):
             contact=r.get("contact"),
             product_text=r.get("product"),
             quantity=r.get("quantity"),
+            items_json=json.dumps(r.get("items") or []),
             destination=r.get("destination"),
             incoterm=r.get("incoterm"),
+            incoterms_json=json.dumps(r.get("incoterms") or []),
             summary=r.get("summary"),
             model_name=MODEL,
         )
         db.add(inq)
         db.flush()
-        
 
-        if inq.intent == "quotation":
-            p = match_product(db, inq.product_text)
-            if p:
-                qty = inq.quantity or p.moq
-                dest = inq.destination or "Japan"
-                calc = calculate(p.unit_price, qty, dest, s, {f.destination: f.cost_usd for f in db.query(Freight).all()})
-                db.add(Quotation(
-                    inquiry_id=inq.id,
-                    quote_no=next_quote_no(db),
-                    product_id=p.id,
-                    quantity=qty,
-                    destination=calc["destination"],
-                    cost=calc["cost"], exw=calc["exw"], fca=calc["fca"], fob=calc["fob"],
-                    cfr=calc["cfr"], cif=calc["cif"], cpt=calc["cpt"], cip=calc["cip"],
-                    unit_cif=calc["unit_cif"],
-                    margin_used=s.profit_margin,
-                    freight_used=calc["freight"],
-                ))
-                inq.status = "quoted"
+        if inq.intent == "quotation" and _generate_quotation(db, inq, s, freight_lookup):
+            inq.status = "quoted"
 
         db.commit()
         new += 1

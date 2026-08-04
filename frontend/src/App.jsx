@@ -12,7 +12,7 @@ import {
 
 import { getInbox, getEmail, getStats, getProducts, getQuotations, getCustomers, getCustomer,
          markViewed, getSettings, getFreight, saveSettings,
-         getDrafts, generateDraft, saveDraft, sendDraftToGmail, recalcQuote,syncInbox, getReports, getSystemInfo, quoteFromEmail, draftFromEmail, regenerateDraft, getInboxArchived, replyFromEmail, archiveEmail, unarchiveEmail, getIrrelevant, purgeIrrelevant, keepEmail, createProduct, updateProduct, deleteProduct, createFreight, deleteFreight } from "./api";
+         getDrafts, generateDraft, saveDraft, sendDraftToGmail, recalcQuote,syncInbox, getReports, getSystemInfo, quoteFromEmail, draftFromEmail, regenerateDraft, getInboxArchived, replyFromEmail, archiveEmail, unarchiveEmail, getIrrelevant, purgeIrrelevant, keepEmail, deleteEmail, createProduct, updateProduct, deleteProduct, createFreight, deleteFreight } from "./api";
 
 /* ---------------- mock data ---------------- */
 
@@ -34,6 +34,16 @@ const STATUS = {
 
 const INCOTERM_KEYS = ["EXW", "FCA", "FOB", "CFR", "CIF", "CPT", "CIP"];
 const UNSUPPORTED_INCOTERMS = new Set(["DAP", "DPU", "DDP", "FAS"]);
+
+/** incoterms: 客戶信裡問到的貿易條件清單（可能不只一個，例如同時問 FOB 跟 CIF）。
+ * 回傳要高亮哪幾格、以及有哪些是系統算不出來的（另外顯示提示用）。 */
+function incotermHighlight(incoterms) {
+  const reqs = (incoterms || []).filter(Boolean).map((t) => t.toUpperCase());
+  const supported = reqs.filter((t) => INCOTERM_KEYS.includes(t));
+  const unsupported = reqs.filter((t) => UNSUPPORTED_INCOTERMS.has(t));
+  const highlightKeys = new Set(reqs.length === 0 ? ["CIF"] : supported);
+  return { highlightKeys, unsupported, anyRequested: reqs.length > 0 };
+}
 
 const COUNTRY_OPTIONS = [
   "Australia", "Belgium", "Brazil", "Canada", "China", "Egypt", "France",
@@ -361,6 +371,12 @@ function InboxPage({ go }) {
     loadIrrelevant();
     load();
   }
+
+  async function remove(mid) {
+    if (!window.confirm("Delete this email? This can't be undone and it won't be re-imported.")) return;
+    await deleteEmail(mid);
+    load();
+  }
   const [syncing, setSyncing] = React.useState(false);
   async function sync() {
     setSyncing(true);
@@ -497,10 +513,16 @@ function InboxPage({ go }) {
                   </Td>
                   <Td><Badge cls={stint(r.status)}>{r.status}</Badge></Td>
                   <Td>
-                    <button onClick={() => { markViewed(r.message_id); go("ai", r.message_id); }}
-                      className="text-sm font-medium text-blue-600 hover:text-blue-700 whitespace-nowrap">
-                      View →
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <button onClick={() => { markViewed(r.message_id); go("ai", r.message_id); }}
+                        className="text-sm font-medium text-blue-600 hover:text-blue-700 whitespace-nowrap">
+                        View →
+                      </button>
+                      <button onClick={(ev) => { ev.stopPropagation(); remove(r.message_id); }}
+                        className="text-sm font-medium text-red-600 hover:text-red-700 whitespace-nowrap">
+                        Delete
+                      </button>
+                    </div>
                   </Td>
                 </tr>
               ))}
@@ -730,14 +752,32 @@ async function toGmail() {
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3">
                     {[["Company", ex.company], ["Contact", ex.contact],
-                      ["Product", ex.product], ["Quantity", ex.quantity?.toLocaleString()],
-                      ["Destination", ex.destination], ["Incoterm", ex.incoterm]].map(([k, v]) => (
+                      ...(ex.items && ex.items.length > 1 ? [] : [
+                        ["Product", ex.product], ["Quantity", ex.quantity?.toLocaleString()],
+                      ]),
+                      ["Destination", ex.destination],
+                      ["Incoterm", ex.incoterms?.length ? ex.incoterms.join(" + ") : null]].map(([k, v]) => (
                       <div key={k}>
                         <div className="text-xs text-slate-400">{k}</div>
                         <div className="text-sm font-medium text-slate-900">{v ?? "—"}</div>
                       </div>
                     ))}
                   </div>
+                  {ex.items && ex.items.length > 1 && (
+                    <div className="mt-4">
+                      <div className="text-xs text-slate-400 mb-1.5">Products requested</div>
+                      <ul className="text-sm text-slate-900 space-y-1">
+                        {ex.items.map((it, idx) => (
+                          <li key={idx} className="flex items-center justify-between border-b border-slate-100 pb-1">
+                            <span>{it.product}</span>
+                            <span className="text-slate-500">
+                              {it.quantity != null ? `${it.quantity.toLocaleString()} pcs` : "qty not stated"}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                   {ex.summary && (
                     <p className="text-sm text-slate-600 mt-4 leading-relaxed">{ex.summary}</p>
                   )}
@@ -774,21 +814,45 @@ async function toGmail() {
                     </button>
                   )}
                   {q && (() => {
-                    const requested = ex.incoterm ? ex.incoterm.toUpperCase() : null;
-                    const isUnsupported = requested && UNSUPPORTED_INCOTERMS.has(requested);
-                    const highlightKey = isUnsupported ? null : (requested || "CIF");
+                    const { highlightKeys, unsupported, anyRequested } = incotermHighlight(ex.incoterms);
                     return (
                     <>
-                      {isUnsupported && (
+                      {unsupported.length > 0 && (
                         <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-800 mb-3">
-                          客戶要求 {requested}，此條件涉及目的地稅費，系統暫不支援自動計算，請人工報價。
+                          客戶要求 {unsupported.join("、")}，此條件涉及目的地稅費，系統暫不支援自動計算，請人工報價。
+                        </div>
+                      )}
+                      {q.items && q.items.length > 1 && (
+                        <div className="mb-4 overflow-x-auto">
+                          <table className="w-full">
+                            <thead>
+                              <tr className="text-xs text-slate-400 border-b border-slate-100">
+                                <th className="text-left font-medium py-1.5">SKU</th>
+                                <th className="text-left font-medium py-1.5">Product</th>
+                                <th className="text-right font-medium py-1.5">Qty</th>
+                                <th className="text-right font-medium py-1.5">Unit cost</th>
+                                <th className="text-right font-medium py-1.5">Line cost</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {q.items.map((it) => (
+                                <tr key={it.sku} className="text-sm border-b border-slate-50">
+                                  <td className="py-1.5 font-mono text-xs text-slate-500">{it.sku}</td>
+                                  <td className="py-1.5 text-slate-900">{it.product}</td>
+                                  <td className="py-1.5 text-right tabular-nums">{it.quantity.toLocaleString()}</td>
+                                  <td className="py-1.5 text-right tabular-nums">USD {it.unit_price.toFixed(2)}</td>
+                                  <td className="py-1.5 text-right tabular-nums font-medium">USD {it.cost.toLocaleString()}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
                         </div>
                       )}
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                         {INCOTERM_KEYS.map((k) => {
                           const v = q[k.toLowerCase()];
                           if (v == null) return null;
-                          const on = highlightKey === k;
+                          const on = highlightKeys.has(k);
                           return (
                             <div key={k} className={`rounded-lg p-4 border ${on ? "border-blue-300 border-2 bg-blue-50" : "border-slate-200"}`}>
                               <div className="text-xs font-semibold text-slate-500">{k}</div>
@@ -800,8 +864,8 @@ async function toGmail() {
                         })}
                       </div>
                       <div className="text-xs text-slate-400 mt-2">
-                        {q.quote_no} · matched SKU {q.sku} · MOQ {q.moq?.toLocaleString()} pcs · {q.lead_days} days
-                        {highlightKey && ` · highlighted term is what the customer asked for`}
+                        {q.quote_no} · {q.items?.length > 1 ? `${q.items.length} products` : `matched SKU ${q.sku}`} · MOQ {q.moq?.toLocaleString()} pcs · {q.lead_days} days
+                        {anyRequested && ` · highlighted term(s) are what the customer asked for`}
                       </div>
                     </>
                     );
@@ -895,7 +959,7 @@ async function toGmail() {
   );
 }
 
-function Quotations() {
+function Quotations({ go, setPendingDraftNote }) {
   const [rows, setRows] = React.useState([]);
   const [open, setOpen] = React.useState(null);
   const [search, setSearch] = React.useState("");
@@ -923,8 +987,14 @@ function Quotations() {
   const [draftMsg, setDraftMsg] = React.useState(null);
   async function makeDraft(quoteNo) {
     const r = await generateDraft(quoteNo);
-    if (r.ok) setDraftMsg("Draft created. Check the Drafts page.");
-    else setDraftMsg(r.error || "Failed.");
+    if (r.draft_id) {
+      setPendingDraftNote?.(
+        r.error ? "This quote already had a draft — showing it below." : "Draft created."
+      );
+      go?.("drafts", r.draft_id);
+    } else {
+      setDraftMsg(r.error || "Failed.");
+    }
   }
 
   const stint = (s) => ({
@@ -956,7 +1026,7 @@ function Quotations() {
                     className={`hover:bg-slate-50 ${open?.quote_no === q.quote_no ? "bg-blue-50/50" : ""}`}>
                   <Td className="font-mono text-xs text-slate-500">{q.quote_no}</Td>
                   <Td className="font-medium text-slate-900">{q.company}</Td>
-                  <Td>{q.product}</Td>
+                  <Td>{q.product}{q.items.length > 1 && ` +${q.items.length - 1} more`}</Td>
                   <Td className="tabular-nums">{q.quantity.toLocaleString()}</Td>
                   <Td>{q.destination}</Td>
                   <Td className="tabular-nums font-medium">USD {q.cif.toLocaleString()}</Td>
@@ -993,29 +1063,116 @@ function Quotations() {
             </div>
           }>
           <div className="px-6 pb-6">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-              {[["EXW", open.exw, "Ex Works"],
-                ["FCA", open.fca, "Free Carrier"],
-                ["FOB", open.fob, "Free On Board"],
-                ["CFR", open.cfr, "Cost and Freight"],
-                ["CIF", open.cif, `Cost, Insurance & Freight — ${open.destination}`],
-                ["CPT", open.cpt, "Carriage Paid To"],
-                ["CIP", open.cip, "Carriage and Insurance Paid To"]].map(([k, v, sub]) => {
-                const on = k === "CIF";
-                return (
-                  <div key={k} className={`rounded-xl p-5 border ${on ? "border-blue-200 bg-blue-50" : "border-slate-200"}`}>
-                    <div className="text-xs font-semibold text-slate-500">{k}</div>
-                    <div className={`text-2xl font-bold mt-1 ${on ? "text-blue-700" : "text-slate-900"}`}>
-                      USD {v.toLocaleString()}
+            {draftMsg && (
+              <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-100 text-sm text-red-700">
+                {draftMsg}
+              </div>
+            )}
+            {open.items.length > 1 && (
+              <div className="mb-6 overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="text-xs text-slate-400 border-b border-slate-100">
+                      <th className="text-left font-medium py-1.5">SKU</th>
+                      <th className="text-left font-medium py-1.5">Product</th>
+                      <th className="text-right font-medium py-1.5">Qty</th>
+                      <th className="text-right font-medium py-1.5">Unit cost</th>
+                      <th className="text-right font-medium py-1.5">Line cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {open.items.map((it) => (
+                      <tr key={it.sku} className="text-sm border-b border-slate-50">
+                        <td className="py-1.5 font-mono text-xs text-slate-500">{it.sku}</td>
+                        <td className="py-1.5 text-slate-900">{it.product}</td>
+                        <td className="py-1.5 text-right tabular-nums">{it.quantity.toLocaleString()}</td>
+                        <td className="py-1.5 text-right tabular-nums">USD {it.unit_price.toFixed(2)}</td>
+                        <td className="py-1.5 text-right tabular-nums font-medium">USD {it.cost.toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {(() => {
+              const { highlightKeys, unsupported, anyRequested } = incotermHighlight(open.incoterms);
+              return (
+                <>
+                  {unsupported.length > 0 && (
+                    <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-800 mb-4">
+                      客戶要求 {unsupported.join("、")}，此條件涉及目的地稅費，系統暫不支援自動計算，請人工報價。
                     </div>
-                    <div className="text-xs text-slate-400 mt-0.5">{sub}</div>
+                  )}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                    {[["EXW", open.exw, "Ex Works"],
+                      ["FCA", open.fca, "Free Carrier"],
+                      ["FOB", open.fob, "Free On Board"],
+                      ["CFR", open.cfr, "Cost and Freight"],
+                      ["CIF", open.cif, `Cost, Insurance & Freight — ${open.destination}`],
+                      ["CPT", open.cpt, "Carriage Paid To"],
+                      ["CIP", open.cip, "Carriage and Insurance Paid To"]].map(([k, v, sub]) => {
+                      const on = highlightKeys.has(k);
+                      return (
+                        <div key={k} className={`rounded-xl p-5 border ${on ? "border-blue-200 bg-blue-50" : "border-slate-200"}`}>
+                          <div className="text-xs font-semibold text-slate-500">{k}</div>
+                          <div className={`text-2xl font-bold mt-1 ${on ? "text-blue-700" : "text-slate-900"}`}>
+                            USD {v.toLocaleString()}
+                          </div>
+                          <div className="text-xs text-slate-400 mt-0.5">{sub}</div>
+                        </div>
+                      );
+                    })}
                   </div>
-                );
-              })}
+                  <p className="text-xs text-slate-400">
+                    Calculated in Python from Price Settings. The language model never touches the arithmetic.
+                    {anyRequested && " · highlighted term(s) are what the customer asked for"}
+                  </p>
+                </>
+              );
+            })()}
+          </div>
+        </Card>
+
+        <Card title={`AI Extraction — ${open.quote_no}`} className="mt-5">
+          <div className="px-6 pb-6">
+            <div className="flex items-center justify-between p-3 rounded-lg bg-slate-50 mb-4">
+              <div className="text-sm text-slate-600 truncate">
+                From <span className="font-medium text-slate-900">{open.extraction.sender_email}</span>
+                {open.extraction.subject && ` · ${open.extraction.subject}`}
+              </div>
+              <div className="text-sm shrink-0 ml-3">
+                <span className="text-slate-400 text-xs mr-2">confidence</span>
+                <span className="font-bold text-slate-900">{open.extraction.confidence}%</span>
+              </div>
             </div>
-            <p className="text-xs text-slate-400">
-              Calculated in Python from Price Settings. The language model never touches the arithmetic.
-            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3">
+              {[["Company", open.extraction.company], ["Contact", open.extraction.contact],
+                ["Destination", open.extraction.destination],
+                ["Incoterm", open.extraction.incoterms?.length ? open.extraction.incoterms.join(" + ") : null]].map(([k, v]) => (
+                <div key={k}>
+                  <div className="text-xs text-slate-400">{k}</div>
+                  <div className="text-sm font-medium text-slate-900">{v ?? "—"}</div>
+                </div>
+              ))}
+            </div>
+            {open.extraction.items?.length > 0 && (
+              <div className="mt-4">
+                <div className="text-xs text-slate-400 mb-1.5">Products requested</div>
+                <ul className="text-sm text-slate-900 space-y-1">
+                  {open.extraction.items.map((it, idx) => (
+                    <li key={idx} className="flex items-center justify-between border-b border-slate-100 pb-1">
+                      <span>{it.product}</span>
+                      <span className="text-slate-500">
+                        {it.quantity != null ? `${it.quantity.toLocaleString()} pcs` : "qty not stated"}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {open.extraction.summary && (
+              <p className="text-sm text-slate-600 mt-4 leading-relaxed">{open.extraction.summary}</p>
+            )}
           </div>
         </Card>
         </div>
@@ -1024,7 +1181,7 @@ function Quotations() {
   );
 }
 
-function Drafts() {
+function Drafts({ selectedId, pendingNote, clearPendingNote }) {
   const [rows, setRows] = React.useState([]);
   const [sel, setSel] = React.useState(null);
   const [tab, setTab] = React.useState("draft");
@@ -1033,13 +1190,31 @@ function Drafts() {
   const [subject, setSubject] = React.useState("");
   const [body, setBody] = React.useState("");
   const [msg, setMsg] = React.useState(null);
+  const appliedSelectedId = React.useRef(false);
 
   const load = React.useCallback(() => {
     getDrafts().then((d) => {
       setRows(d);
+      // 從 Quotations 頁「Generate draft」跳過來時，優先選中那筆草稿並帶出提示訊息。
+      // 只套用一次（用 ref 擋）。StrictMode 開發模式下 mount effect 會呼叫兩次 load()，
+      // 第二次進來時 ref 已經是 true，直接跳過整段（包括下面的 fallback），不然用的是
+      // 第一次呼叫時捕捉到的舊 sel 閉包（還是 null），會誤判「還沒選過」而蓋掉正確的選取。
+      if (appliedSelectedId.current) return;
+      if (selectedId) {
+        appliedSelectedId.current = true;
+        const target = d.find((x) => x.id === selectedId);
+        if (target) {
+          pick(target);
+          setTab(target.status === "sent" ? "sent" : "draft");
+          if (pendingNote) setMsg(pendingNote);
+          clearPendingNote?.();
+          return;
+        }
+        clearPendingNote?.();
+      }
       if (d.length && !sel) pick(d[0]);
     }).catch(() => {});
-  }, [sel]);
+  }, [sel, selectedId, pendingNote]);
 
   React.useEffect(() => { load(); }, []);
 
@@ -1878,6 +2053,7 @@ export default function App() {
     freight: "350", insurance: "80", localCharges: "120", bank: "35",
   });
   const [stats, setStats] = useState(null);
+  const [pendingDraftNote, setPendingDraftNote] = useState(null);
   React.useEffect(() => { getStats().then(setStats).catch(() => {}); }, [page]);
   const badges = {
     inbox: stats?.unread || 0,
@@ -1890,8 +2066,9 @@ export default function App() {
     dashboard:  <Dashboard go={go} />,
     inbox:      <InboxPage go={go} />,
     ai:         <AIReview selected={selected} setSelected={setSelected} />,
-    quotations: <Quotations settings={settings} />,
-    drafts:     <Drafts />,
+    quotations: <Quotations settings={settings} go={go} setPendingDraftNote={setPendingDraftNote} />,
+    drafts:     <Drafts selectedId={selected} pendingNote={pendingDraftNote}
+                  clearPendingNote={() => setPendingDraftNote(null)} />,
     customers:  <Customers />,
     products:   <Products />,
     pricing:    <PriceSettings settings={settings} setSettings={setSettings} />,

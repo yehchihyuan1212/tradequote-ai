@@ -87,8 +87,10 @@ class Inquiry(Base):
     contact: Mapped[str | None] = mapped_column(String(120))
     product_text: Mapped[str | None] = mapped_column(String(200))
     quantity: Mapped[int | None] = mapped_column(Integer)
+    items_json: Mapped[str | None] = mapped_column(Text)
     destination: Mapped[str | None] = mapped_column(String(80))
     incoterm: Mapped[str | None] = mapped_column(String(10))
+    incoterms_json: Mapped[str | None] = mapped_column(Text)
     summary: Mapped[str | None] = mapped_column(Text)
     model_name: Mapped[str] = mapped_column(String(80))
     analysed_at: Mapped[datetime] = mapped_column(default=datetime.now)
@@ -102,6 +104,12 @@ class Inquiry(Base):
 
 
 class Quotation(Base):
+    """一封詢價信 = 一筆報價（一個 quote_no），可能包含多個產品品項（見 items）。
+
+    product_id/quantity 保留第一個品項，供只需要「一個代表性產品」的舊畫面
+    （列表欄位等）使用；真正的金額欄位 (cost/exw/.../cip) 是所有品項加總後
+    的整批報價金額。
+    """
     __tablename__ = "quotations"
     id: Mapped[int] = mapped_column(primary_key=True)
     inquiry_id: Mapped[int] = mapped_column(ForeignKey("inquiries.id"), unique=True)
@@ -128,7 +136,24 @@ class Quotation(Base):
 
     inquiry: Mapped["Inquiry"] = relationship(back_populates="quotation")
     product: Mapped["Product"] = relationship()
-    
+    items: Mapped[list["QuotationItem"]] = relationship(
+        back_populates="quotation", cascade="all, delete-orphan",
+        order_by="QuotationItem.id")
+
+
+class QuotationItem(Base):
+    __tablename__ = "quotation_items"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    quotation_id: Mapped[int] = mapped_column(ForeignKey("quotations.id"))
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
+    quantity: Mapped[int] = mapped_column(Integer)
+    unit_price: Mapped[float] = mapped_column(Float)
+    cost: Mapped[float] = mapped_column(Float)
+
+    quotation: Mapped["Quotation"] = relationship(back_populates="items")
+    product: Mapped["Product"] = relationship()
+
+
 class Draft(Base):
     __tablename__ = "drafts"
 

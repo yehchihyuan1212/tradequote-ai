@@ -1,4 +1,4 @@
-const BASE = "http://localhost:8000/api";
+const BASE = `http://${window.location.hostname}:8000/api`;
 
 async function get(path) {
   const r = await fetch(`${BASE}${path}`);
@@ -90,6 +90,11 @@ export async function archiveEmail(messageId) {
 
 export async function unarchiveEmail(messageId) {
   const r = await fetch(`${BASE}/inbox/${messageId}/unarchive`, { method: "POST" });
+  return r.json();
+}
+
+export async function deleteEmail(messageId) {
+  const r = await fetch(`${BASE}/inbox/${messageId}/delete`, { method: "POST" });
   return r.json();
 }
 
