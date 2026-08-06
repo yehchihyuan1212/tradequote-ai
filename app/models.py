@@ -43,7 +43,8 @@ class PriceSetting(Base):
     insurance: Mapped[float] = mapped_column(Float, default=80.0)
     bank_charges: Mapped[float] = mapped_column(Float, default=35.0)
     usd_twd: Mapped[float] = mapped_column(Float, default=29.6)
-    sync_limit: Mapped[int] = mapped_column(Integer, default=20)
+    sync_limit: Mapped[int] = mapped_column(Integer, default=0)
+    shipping_port: Mapped[str] = mapped_column(String(80), default="Kaohsiung")
     updated_at: Mapped[datetime] = mapped_column(default=datetime.now,
                                                  onupdate=datetime.now)
 
@@ -129,6 +130,7 @@ class Quotation(Base):
     unit_cif: Mapped[float] = mapped_column(Float)
     margin_used: Mapped[float] = mapped_column(Float)
     freight_used: Mapped[float] = mapped_column(Float)
+    freight_estimated: Mapped[bool] = mapped_column(Boolean, default=False)
 
     status: Mapped[str] = mapped_column(String(40), default="draft")
     draft_id: Mapped[str | None] = mapped_column(String(120))

@@ -11,7 +11,7 @@ from app.services.pricing_service import PriceSettings
 VALID_INTENTS = {"quotation", "sample_request", "delivery_followup",
                  "after_sales", "payment", "other"}
 
-def ingest(query="is:unread", limit=20):
+def ingest(query="is:unread", limit=None):
     init_db()
     db = SessionLocal()
     settings_row = db.query(PriceSetting).first()
@@ -22,6 +22,7 @@ def ingest(query="is:unread", limit=20):
         bank_charges=settings_row.bank_charges,
         usd_twd=settings_row.usd_twd,
     )
+    limit = limit or settings_row.sync_limit
     freight_lookup = _freight_table(db)
 
     new, skipped = 0, 0

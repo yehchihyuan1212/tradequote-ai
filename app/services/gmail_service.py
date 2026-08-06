@@ -68,6 +68,8 @@ def _extract_body(payload):
 
 
 def fetch_new(max_results=10, query="is:unread"):
+    if max_results <= 0:
+        return []
     svc = _service()
     res = svc.users().messages().list(
         userId="me", q=query, maxResults=max_results

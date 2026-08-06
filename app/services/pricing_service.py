@@ -61,7 +61,7 @@ def calculate_from_cost(cost: float, destination: str,
     table = freight_lookup or {}
     freight = table.get(destination, DEFAULT_FREIGHT)
 
-    exw = cost / (1 - s.profit_margin)
+    exw = cost / (1 - s.profit_margin) + s.bank_charges
     fca = exw + s.local_charges / 2
     fob = exw + s.local_charges
     cfr = fob + freight
@@ -72,7 +72,8 @@ def calculate_from_cost(cost: float, destination: str,
     terms = {"exw": exw, "fca": fca, "fob": fob, "cfr": cfr,
               "cif": cif, "cpt": cpt, "cip": cip}
 
-    result = {"cost": round(cost, 2), "freight": freight, "destination": destination}
+    result = {"cost": round(cost, 2), "freight": freight, "destination": destination,
+              "freight_estimated": destination not in table}
     for key, value in terms.items():
         result[key] = round(value, 2)
     return result

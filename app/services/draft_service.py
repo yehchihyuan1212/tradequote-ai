@@ -5,8 +5,13 @@ INCOTERM_LABELS = {
     "cif": "CIF", "cpt": "CPT", "cip": "CIP",
 }
 
+# EXW/FCA/FOB 是用出貨港命名（例如 FOB Kaohsiung），不是目的地——
+# 跟 CFR/CIF/CPT/CIP 用目的地命名剛好相反。
+ORIGIN_NAMED = {"exw", "fca", "fob"}
 
-def compose_quotation_reply(contact, items, dest, prices, incoterms=None, validity=30):
+
+def compose_quotation_reply(contact, items, dest, prices, incoterms=None, validity=30,
+                            shipping_port=None):
     """items: list of {product, sku, quantity, unit_exw, moq, lead_days} — one entry
     per requested product (see main._quote_items). prices: dict with exw/fca/fob/cfr/
     cif/cpt/cip totals for the whole quote (see main._quote_prices) — freight/insurance
@@ -14,7 +19,8 @@ def compose_quotation_reply(contact, items, dest, prices, incoterms=None, validi
     term the customer asked for (a single email can ask for more than one, e.g. "FOB
     and CIF pricing") — each one we can calculate gets its own total line; any that
     fall in pricing_service.UNSUPPORTED_INCOTERMS get a note instead. Falls back to
-    FOB + CIF when nothing usable was requested.
+    FOB + CIF when nothing usable was requested. shipping_port: our own export port
+    (e.g. "Kaohsiung"), shown next to EXW/FCA/FOB instead of the customer's destination.
     """
     greeting = contact or "Sir/Madam"
     reqs = [t.upper() for t in (incoterms or []) if t]
@@ -31,7 +37,9 @@ def compose_quotation_reply(contact, items, dest, prices, incoterms=None, validi
 
     shown = supported or ["FOB", "CIF"]
     total_lines = "\n".join(
-        f"  {INCOTERM_LABELS[t.lower()]} {dest} total : USD {prices[t.lower()]:,.2f}"
+        f"  {INCOTERM_LABELS[t.lower()]} {shipping_port} total : USD {prices[t.lower()]:,.2f}"
+        if t.lower() in ORIGIN_NAMED and shipping_port
+        else f"  {INCOTERM_LABELS[t.lower()]} {dest} total : USD {prices[t.lower()]:,.2f}"
         for t in shown
     )
 

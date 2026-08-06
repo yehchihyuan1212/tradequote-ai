@@ -232,7 +232,17 @@ def _generate_quotation(db, inq: Inquiry, s, freight_lookup=None):
         return None
 
     total_cost = sum(p.unit_price * qty for p, qty in matched)
-    dest = inq.destination or "Japan"
+    dest = inq.destination or ""
+    if not dest:
+        # 沒有目的地時：如果客戶要求的貿易條件全部都是「出貨港命名」
+        # （EXW/FCA/FOB，運費本來就不影響這些條件的報價），改以我們自己
+        # 的出貨港（高雄／台灣）為報價基準去查運費表；客戶完全沒指定
+        # 條件、或條件裡有目的地命名的（CFR/CIF/CPT/CIP）就不能亂猜，
+        # 維持空白，讓畫面提醒使用者確認目的地。
+        origin_named = {"EXW", "FCA", "FOB"}
+        reqs = {t.upper() for t in _parse_incoterms(inq)}
+        if reqs and reqs.issubset(origin_named):
+            dest = "Taiwan"
     calc = calculate_from_cost(total_cost, dest, s, freight_lookup)
 
     first_p, first_qty = matched[0]
@@ -240,11 +250,12 @@ def _generate_quotation(db, inq: Inquiry, s, freight_lookup=None):
     n = db.query(Quotation).count() + 1
     q = Quotation(
         inquiry_id=inq.id, quote_no=f"Q-2026-{n:03d}",
-        product_id=first_p.id, quantity=first_qty, destination=calc["destination"],
+        product_id=first_p.id, quantity=first_qty, destination=calc["destination"] or "",
         cost=calc["cost"], exw=calc["exw"], fca=calc["fca"], fob=calc["fob"],
         cfr=calc["cfr"], cif=calc["cif"], cpt=calc["cpt"], cip=calc["cip"],
         unit_cif=round(calc["cif"] / total_qty, 4) if total_qty else 0,
         margin_used=s.profit_margin, freight_used=calc["freight"],
+        freight_estimated=calc["freight_estimated"],
     )
     db.add(q)
     db.flush()
@@ -302,10 +313,11 @@ def email_detail(message_id: str, db: Session = Depends(get_db)):
         }
         if i.quotation:
             q = i.quotation
+            settings_row = db.query(PriceSetting).first()
             out["quote"] = {
                 "quote_no": q.quote_no, "sku": q.product.sku,
                 "product": q.product.name, "quantity": q.quantity,
-                "destination": q.destination,
+                "destination": q.destination, "freight_estimated": q.freight_estimated,
                 "cost": q.cost, "exw": q.exw, "fca": q.fca, "fob": q.fob,
                 "cfr": q.cfr, "cif": q.cif, "cpt": q.cpt, "cip": q.cip,
                 "unit_cif": q.unit_cif,
@@ -314,6 +326,15 @@ def email_detail(message_id: str, db: Session = Depends(get_db)):
                 "items": [{"sku": it.product.sku, "product": it.product.name,
                            "quantity": it.quantity, "unit_price": it.unit_price,
                            "cost": it.cost} for it in q.items],
+                "breakdown": {
+                    "cost": q.cost,
+                    "margin_pct": q.margin_used,
+                    "margin_amount": round(q.cost * q.margin_used / (1 - q.margin_used), 2) if q.margin_used < 1 else 0,
+                    "freight": q.freight_used,
+                    "local_charges": settings_row.local_charges,
+                    "insurance": settings_row.insurance,
+                    "bank_charges": settings_row.bank_charges,
+                },
             }
 
         from app.models import Draft
@@ -355,6 +376,7 @@ def products(db: Session = Depends(get_db)):
 
 @app.get("/api/quotations")
 def quotations(db: Session = Depends(get_db)):
+    settings_row = db.query(PriceSetting).first()
     rows = []
     for q in db.query(Quotation).order_by(Quotation.id.desc()).all():
         i = q.inquiry
@@ -365,9 +387,18 @@ def quotations(db: Session = Depends(get_db)):
             "items": [{"sku": it.product.sku, "product": it.product.name,
                        "quantity": it.quantity, "unit_price": it.unit_price,
                        "cost": it.cost} for it in q.items],
-            "destination": q.destination,
+            "destination": q.destination, "freight_estimated": q.freight_estimated,
             "exw": q.exw, "fca": q.fca, "fob": q.fob, "cfr": q.cfr,
             "cif": q.cif, "cpt": q.cpt, "cip": q.cip, "status": q.status,
+            "breakdown": {
+                "cost": q.cost,
+                "margin_pct": q.margin_used,
+                "margin_amount": round(q.cost * q.margin_used / (1 - q.margin_used), 2) if q.margin_used < 1 else 0,
+                "freight": q.freight_used,
+                "local_charges": settings_row.local_charges,
+                "insurance": settings_row.insurance,
+                "bank_charges": settings_row.bank_charges,
+            },
             "extraction": {
                 "confidence": i.confidence, "company": i.company, "contact": i.contact,
                 "destination": i.destination, "incoterms": _parse_incoterms(i),
@@ -459,6 +490,7 @@ class SettingsIn(BaseModel):
     bank_charges: float | None = None
     usd_twd: float | None = None
     sync_limit: int | None = None
+    shipping_port: str | None = None
 
 
 @app.get("/api/settings")
@@ -475,6 +507,7 @@ def get_settings(db: Session = Depends(get_db)):
         "bank_charges": s.bank_charges,
         "usd_twd": s.usd_twd,
         "sync_limit": s.sync_limit,
+        "shipping_port": s.shipping_port,
         "updated_at": s.updated_at.strftime("%Y-%m-%d %H:%M"),
     }
 
@@ -561,9 +594,11 @@ def generate_draft(quote_no: str, db: Session = Depends(get_db)):
 
     inq = q.inquiry
     email = inq.email
+    settings_row = db.query(PriceSetting).first()
     body = compose_quotation_reply(
         contact=inq.contact, items=_quote_items(q), dest=q.destination,
         prices=_quote_prices(q), incoterms=_parse_incoterms(inq),
+        shipping_port=settings_row.shipping_port,
     )
     d = Draft(
         quotation_id=q.id, inquiry_id=inq.id,
@@ -643,7 +678,14 @@ def recalculate(quote_no: str, db: Session = Depends(get_db)):
         total_cost += it.cost
         total_qty += it.quantity
 
-    calc = calculate_from_cost(total_cost, q.destination, s)
+    dest = q.destination or ""
+    if not dest:
+        origin_named = {"EXW", "FCA", "FOB"}
+        reqs = {t.upper() for t in _parse_incoterms(q.inquiry)}
+        if reqs and reqs.issubset(origin_named):
+            dest = "Taiwan"
+    calc = calculate_from_cost(total_cost, dest, s, _freight_table(db))
+    q.destination = calc["destination"] or ""
     q.cost = calc["cost"]
     q.exw = calc["exw"]
     q.fca = calc["fca"]
@@ -655,6 +697,7 @@ def recalculate(quote_no: str, db: Session = Depends(get_db)):
     q.unit_cif = round(calc["cif"] / total_qty, 4) if total_qty else 0
     q.margin_used = s.profit_margin
     q.freight_used = calc["freight"]
+    q.freight_estimated = calc["freight_estimated"]
     db.commit()
     return {"ok": True, "cif": q.cif, "margin": q.margin_used}
 
@@ -672,6 +715,7 @@ def sync_inbox(query: str = "is:unread", limit: int | None = None,
         insurance=row.insurance, bank_charges=row.bank_charges, usd_twd=row.usd_twd,
     )
     limit = limit or row.sync_limit
+    freight_lookup = _freight_table(db)
 
     new = 0
     try:
@@ -719,7 +763,7 @@ def sync_inbox(query: str = "is:unread", limit: int | None = None,
         db.add(inq)
         db.flush()
 
-        if inq.intent == "quotation" and _generate_quotation(db, inq, s):
+        if inq.intent == "quotation" and _generate_quotation(db, inq, s, freight_lookup):
             inq.status = "quoted"
 
         db.commit()
@@ -873,7 +917,7 @@ def quote_from_email(message_id: str, db: Session = Depends(get_db)):
         profit_margin=row.profit_margin, local_charges=row.local_charges,
         insurance=row.insurance, bank_charges=row.bank_charges, usd_twd=row.usd_twd,
     )
-    q = _generate_quotation(db, i, s)
+    q = _generate_quotation(db, i, s, _freight_table(db))
     if not q:
         return {"error": f"No product in the catalogue matches '{i.product_text}'"}
 
@@ -900,9 +944,11 @@ def draft_from_email(message_id: str, db: Session = Depends(get_db)):
     if not q:
         return {"error": "Generate a quotation first"}
 
+    settings_row = db.query(PriceSetting).first()
     body = compose_quotation_reply(
         contact=i.contact, items=_quote_items(q), dest=q.destination,
         prices=_quote_prices(q), incoterms=_parse_incoterms(i),
+        shipping_port=settings_row.shipping_port,
     )
     d = Draft(
         quotation_id=q.id, inquiry_id=i.id,
@@ -928,9 +974,11 @@ def regenerate_draft(draft_id: int, db: Session = Depends(get_db)):
     if not q:
         return {"error": "No quotation attached to this draft"}
 
+    settings_row = db.query(PriceSetting).first()
     d.body = compose_quotation_reply(
         contact=i.contact, items=_quote_items(q), dest=q.destination,
         prices=_quote_prices(q), incoterms=_parse_incoterms(i),
+        shipping_port=settings_row.shipping_port,
     )
     db.commit()
     return {"ok": True}

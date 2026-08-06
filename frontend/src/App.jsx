@@ -32,7 +32,7 @@ const STATUS = {
   Sent:         "bg-emerald-50 text-emerald-700",
 };
 
-const INCOTERM_KEYS = ["EXW", "FCA", "FOB", "CFR", "CIF", "CPT", "CIP"];
+const INCOTERM_KEYS = ["EXW", "FCA", "CPT", "CIP", "FOB", "CFR", "CIF"];
 const UNSUPPORTED_INCOTERMS = new Set(["DAP", "DPU", "DDP", "FAS"]);
 
 /** incoterms: 客戶信裡問到的貿易條件清單（可能不只一個，例如同時問 FOB 跟 CIF）。
@@ -43,6 +43,26 @@ function incotermHighlight(incoterms) {
   const unsupported = reqs.filter((t) => UNSUPPORTED_INCOTERMS.has(t));
   const highlightKeys = new Set(reqs.length === 0 ? ["CIF"] : supported);
   return { highlightKeys, unsupported, anyRequested: reqs.length > 0 };
+}
+
+// 每個貿易條件實際包含哪些成本項目——用來在 Price breakdown 卡片上標記
+// 「這筆報價的金額組成」，跟著客戶要求的貿易條件變動。
+const INCOTERM_COMPONENTS = {
+  EXW: ["cost", "margin", "bank_charges"],
+  FCA: ["cost", "margin", "bank_charges", "local_charges"],
+  FOB: ["cost", "margin", "bank_charges", "local_charges"],
+  CFR: ["cost", "margin", "bank_charges", "local_charges", "freight"],
+  CIF: ["cost", "margin", "bank_charges", "local_charges", "freight", "insurance"],
+  CPT: ["cost", "margin", "bank_charges", "freight"],
+  CIP: ["cost", "margin", "bank_charges", "freight", "insurance"],
+};
+
+function breakdownIncluded(highlightKeys) {
+  const included = new Set();
+  for (const term of highlightKeys) {
+    for (const key of INCOTERM_COMPONENTS[term] || []) included.add(key);
+  }
+  return included;
 }
 
 const COUNTRY_OPTIONS = [
@@ -815,8 +835,16 @@ async function toGmail() {
                   )}
                   {q && (() => {
                     const { highlightKeys, unsupported, anyRequested } = incotermHighlight(ex.incoterms);
+                    const included = breakdownIncluded(highlightKeys);
                     return (
                     <>
+                      {q.freight_estimated && included.has("freight") && (
+                        <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-800 mb-3">
+                          {q.destination
+                            ? `系統沒有「${q.destination}」的運費資料，已用預設運費 USD 500 計算，建議至 Price Settings 補上這個目的地的運費後再重新計算。`
+                            : "客戶信件未提及目的地，無法查表計算運費，已用預設運費 USD 500 計算，請與客戶確認目的地後再重新計算。"}
+                        </div>
+                      )}
                       {unsupported.length > 0 && (
                         <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-800 mb-3">
                           客戶要求 {unsupported.join("、")}，此條件涉及目的地稅費，系統暫不支援自動計算，請人工報價。
@@ -846,6 +874,32 @@ async function toGmail() {
                               ))}
                             </tbody>
                           </table>
+                        </div>
+                      )}
+                      {q.breakdown && (
+                        <div className="mb-4">
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                            {[
+                              ["cost", "Cost", q.breakdown.cost],
+                              ["margin", `Margin (${Math.round(q.breakdown.margin_pct * 100)}%)`, q.breakdown.margin_amount],
+                              ["freight", "Freight", q.breakdown.freight],
+                              ["insurance", "Insurance", q.breakdown.insurance],
+                              ["local_charges", "Local charges", q.breakdown.local_charges],
+                              ["bank_charges", "Bank charges", q.breakdown.bank_charges],
+                            ].map(([key, label, v]) => {
+                              const on = included.has(key);
+                              return (
+                                <div key={key}
+                                  className={`rounded-lg p-3 border ${on ? "border-slate-300 bg-slate-50" : "border-slate-100 opacity-40"}`}>
+                                  <div className={`text-xs ${on ? "text-slate-500" : "text-slate-400"}`}>{label}</div>
+                                  <div className={`text-sm font-medium ${on ? "text-slate-900" : "text-slate-400"}`}>USD {v.toLocaleString()}</div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <p className="text-xs text-slate-400 mt-1.5">
+                            Highlighted items make up the {[...highlightKeys].join(" / ")} price{anyRequested ? " the customer asked for" : ""}. Faded items aren't part of it.
+                          </p>
                         </div>
                       )}
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -1096,8 +1150,42 @@ function Quotations({ go, setPendingDraftNote }) {
             )}
             {(() => {
               const { highlightKeys, unsupported, anyRequested } = incotermHighlight(open.incoterms);
+              const included = breakdownIncluded(highlightKeys);
               return (
                 <>
+                  {open.freight_estimated && included.has("freight") && (
+                    <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-800 mb-4">
+                      {open.destination
+                        ? `系統沒有「${open.destination}」的運費資料，已用預設運費 USD 500 計算，建議至 Price Settings 補上這個目的地的運費後再重新計算。`
+                        : "客戶信件未提及目的地，無法查表計算運費，已用預設運費 USD 500 計算，請與客戶確認目的地後再重新計算。"}
+                    </div>
+                  )}
+                  {open.breakdown && (
+                    <div className="mb-6">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                        {[
+                          ["cost", "Cost", open.breakdown.cost],
+                          ["margin", `Margin (${Math.round(open.breakdown.margin_pct * 100)}%)`, open.breakdown.margin_amount],
+                          ["freight", "Freight", open.breakdown.freight],
+                          ["insurance", "Insurance", open.breakdown.insurance],
+                          ["local_charges", "Local charges", open.breakdown.local_charges],
+                          ["bank_charges", "Bank charges", open.breakdown.bank_charges],
+                        ].map(([key, label, v]) => {
+                          const on = included.has(key);
+                          return (
+                            <div key={key}
+                              className={`rounded-lg p-3 border ${on ? "border-slate-300 bg-slate-50" : "border-slate-100 opacity-40"}`}>
+                              <div className={`text-xs ${on ? "text-slate-500" : "text-slate-400"}`}>{label}</div>
+                              <div className={`text-sm font-medium ${on ? "text-slate-900" : "text-slate-400"}`}>USD {v.toLocaleString()}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <p className="text-xs text-slate-400 mt-2">
+                        Highlighted items make up the {[...highlightKeys].join(" / ")} price{anyRequested ? " the customer asked for" : ""}. Faded items aren't part of it.
+                      </p>
+                    </div>
+                  )}
                   {unsupported.length > 0 && (
                     <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-800 mb-4">
                       客戶要求 {unsupported.join("、")}，此條件涉及目的地稅費，系統暫不支援自動計算，請人工報價。
@@ -1106,11 +1194,11 @@ function Quotations({ go, setPendingDraftNote }) {
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
                     {[["EXW", open.exw, "Ex Works"],
                       ["FCA", open.fca, "Free Carrier"],
+                      ["CPT", open.cpt, "Carriage Paid To"],
+                      ["CIP", open.cip, "Carriage and Insurance Paid To"],
                       ["FOB", open.fob, "Free On Board"],
                       ["CFR", open.cfr, "Cost and Freight"],
-                      ["CIF", open.cif, `Cost, Insurance & Freight — ${open.destination}`],
-                      ["CPT", open.cpt, "Carriage Paid To"],
-                      ["CIP", open.cip, "Carriage and Insurance Paid To"]].map(([k, v, sub]) => {
+                      ["CIF", open.cif, open.destination ? `Cost, Insurance & Freight — ${open.destination}` : "Cost, Insurance & Freight"]].map(([k, v, sub]) => {
                       const on = highlightKeys.has(k);
                       return (
                         <div key={k} className={`rounded-xl p-5 border ${on ? "border-blue-200 bg-blue-50" : "border-slate-200"}`}>
@@ -1945,15 +2033,39 @@ function SettingsPage() {
   const [syncSaving, setSyncSaving] = React.useState(false);
   const [syncMsg, setSyncMsg] = React.useState(null);
 
+  const [shippingPort, setShippingPort] = React.useState("");
+  const [portSaving, setPortSaving] = React.useState(false);
+  const [portMsg, setPortMsg] = React.useState(null);
+
   React.useEffect(() => {
     getSystemInfo().then(setInfo).catch(() => {});
-    getSettings().then((s) => setSyncLimit(String(s.sync_limit))).catch(() => {});
+    getSettings().then((s) => {
+      setSyncLimit(String(s.sync_limit));
+      setShippingPort(s.shipping_port || "");
+    }).catch(() => {});
   }, []);
+
+  async function saveShippingPort() {
+    if (!shippingPort.trim()) {
+      setPortMsg("Enter a port name.");
+      return;
+    }
+    setPortSaving(true);
+    setPortMsg(null);
+    try {
+      await saveSettings({ shipping_port: shippingPort.trim() });
+      setPortMsg("Saved. New EXW/FCA/FOB quotes will show this port.");
+    } catch {
+      setPortMsg("Couldn't save. Check the backend is running.");
+    } finally {
+      setPortSaving(false);
+    }
+  }
 
   async function saveSyncLimit() {
     const n = parseInt(syncLimit, 10);
-    if (!n || n < 1) {
-      setSyncMsg("Enter a number of 1 or more.");
+    if (isNaN(n) || n < 0) {
+      setSyncMsg("Enter a number of 0 or more.");
       return;
     }
     setSyncSaving(true);
@@ -1989,6 +2101,19 @@ function SettingsPage() {
           <p className="text-xs text-slate-400">
             The signature appears at the end of generated draft replies.
           </p>
+          <div className="pt-2 border-t border-slate-100">
+            <Field label="Shipping port" value={shippingPort} onChange={setShippingPort} />
+            <p className="text-xs text-slate-400 mt-2">
+              EXW, FCA and FOB are named after the port goods ship from, not the
+              customer's destination — this is shown next to those terms in quotations.
+            </p>
+            {portMsg && <p className="text-xs text-slate-500 mt-2">{portMsg}</p>}
+            <button onClick={saveShippingPort} disabled={portSaving}
+              className="mt-2 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium
+                         hover:bg-blue-700 disabled:bg-slate-300">
+              {portSaving ? "Saving…" : "Save"}
+            </button>
+          </div>
         </div>
       </Card>
 
