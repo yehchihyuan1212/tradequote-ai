@@ -380,6 +380,7 @@ def quotations(db: Session = Depends(get_db)):
     rows = []
     for q in db.query(Quotation).order_by(Quotation.id.desc()).all():
         i = q.inquiry
+        draft = db.query(Draft).filter_by(quotation_id=q.id).first()
         rows.append({
             "quote_no": q.quote_no, "company": _display_company(i),
             "product": q.product.name, "quantity": q.quantity,
@@ -390,6 +391,10 @@ def quotations(db: Session = Depends(get_db)):
             "destination": q.destination, "freight_estimated": q.freight_estimated,
             "exw": q.exw, "fca": q.fca, "fob": q.fob, "cfr": q.cfr,
             "cif": q.cif, "cpt": q.cpt, "cip": q.cip, "status": q.status,
+            "draft": {
+                "id": draft.id,
+                "outdated": q.updated_at > draft.updated_at,
+            } if draft else None,
             "breakdown": {
                 "cost": q.cost,
                 "margin_pct": q.margin_used,
@@ -608,6 +613,7 @@ def generate_draft(quote_no: str, db: Session = Depends(get_db)):
     )
     db.add(d)
     inq.status = "drafted"
+    q.status = "drafted"
     db.commit()
     return {"ok": True, "draft_id": d.id}
 
@@ -642,17 +648,14 @@ def send_to_gmail(draft_id: int, db: Session = Depends(get_db)):
     d.status = "sent"
     if d.inquiry.quotation:
         d.inquiry.quotation.draft_id = gmail_id
-        d.gmail_draft_id = gmail_id
-    d.status = "sent"
-    if d.inquiry.quotation:
-        d.inquiry.quotation.draft_id = gmail_id
+        d.inquiry.quotation.status = "sent"
     d.inquiry.status = "sent"
     if d.inquiry.email:
         d.inquiry.email.archived_at = datetime.now()
     db.commit()
     return {"ok": True, "gmail_draft_id": gmail_id}
-    db.commit()
-    return {"ok": True, "gmail_draft_id": gmail_id}  
+
+
 @app.post("/api/quotations/{quote_no}/recalculate")
 def recalculate(quote_no: str, db: Session = Depends(get_db)):
     """用目前的 Price Settings 重算,更新快照（含每個品項用目前的產品單價重算）。"""
@@ -842,7 +845,26 @@ def system_info(db: Session = Depends(get_db)):
         "data_location": "Local SQLite (tradequote.db)",
         "privacy_note": "All email analysis runs on this machine. No data leaves the device.",
     }
-    
+
+
+@app.post("/api/system/reset")
+def reset_database():
+    """清空所有資料表並重新灌入預設資料，等同手動執行
+    `rm tradequote.db && uv run python seed.py`，但不會動到 Gmail 憑證。"""
+    from app.database import SessionLocal, engine
+    from app.models import Base
+    from seed import seed as run_seed
+
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    db = SessionLocal()
+    try:
+        run_seed(db)
+    finally:
+        db.close()
+    return {"ok": True}
+
+
 @app.get("/api/export")
 def export_excel(db: Session = Depends(get_db)):
     from io import BytesIO
@@ -958,6 +980,7 @@ def draft_from_email(message_id: str, db: Session = Depends(get_db)):
     )
     db.add(d)
     i.status = "drafted"
+    q.status = "drafted"
     db.commit()
     return {"ok": True, "draft_id": d.id}
 @app.post("/api/drafts/{draft_id}/regenerate")

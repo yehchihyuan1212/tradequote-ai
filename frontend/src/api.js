@@ -63,6 +63,11 @@ export const getReports = () => get("/reports");
 
 export const getSystemInfo = () => get("/system-info");
 
+export async function resetDatabase() {
+  const r = await fetch(`${BASE}/system/reset`, { method: "POST" });
+  return r.json();
+}
+
 export async function quoteFromEmail(messageId) {
   const r = await fetch(`${BASE}/inbox/${messageId}/quote`, { method: "POST" });
   return r.json();

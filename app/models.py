@@ -135,6 +135,7 @@ class Quotation(Base):
     status: Mapped[str] = mapped_column(String(40), default="draft")
     draft_id: Mapped[str | None] = mapped_column(String(120))
     created_at: Mapped[datetime] = mapped_column(default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(default=datetime.now, onupdate=datetime.now)
 
     inquiry: Mapped["Inquiry"] = relationship(back_populates="quotation")
     product: Mapped["Product"] = relationship()

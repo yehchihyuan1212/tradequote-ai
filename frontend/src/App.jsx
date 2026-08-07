@@ -12,7 +12,7 @@ import {
 
 import { getInbox, getEmail, getStats, getProducts, getQuotations, getCustomers, getCustomer,
          markViewed, getSettings, getFreight, saveSettings,
-         getDrafts, generateDraft, saveDraft, sendDraftToGmail, recalcQuote,syncInbox, getReports, getSystemInfo, quoteFromEmail, draftFromEmail, regenerateDraft, getInboxArchived, replyFromEmail, archiveEmail, unarchiveEmail, getIrrelevant, purgeIrrelevant, keepEmail, deleteEmail, createProduct, updateProduct, deleteProduct, createFreight, deleteFreight } from "./api";
+         getDrafts, generateDraft, saveDraft, sendDraftToGmail, recalcQuote,syncInbox, getReports, getSystemInfo, resetDatabase, quoteFromEmail, draftFromEmail, regenerateDraft, getInboxArchived, replyFromEmail, archiveEmail, unarchiveEmail, getIrrelevant, purgeIrrelevant, keepEmail, deleteEmail, createProduct, updateProduct, deleteProduct, createFreight, deleteFreight } from "./api";
 
 /* ---------------- mock data ---------------- */
 
@@ -356,7 +356,7 @@ function Dashboard({ go }) {
   );
 }
 
-function InboxPage({ go }) {
+function InboxPage({ go, refreshStats }) {
   const [rows, setRows] = React.useState([]);
   const [q, setQ] = React.useState("");
   const [error, setError] = React.useState(null);
@@ -384,24 +384,28 @@ function InboxPage({ go }) {
     await purgeIrrelevant();
     loadIrrelevant();
     load();
+    refreshStats?.();
   }
 
   async function keep(mid) {
     await keepEmail(mid);
     loadIrrelevant();
     load();
+    refreshStats?.();
   }
 
   async function remove(mid) {
     if (!window.confirm("Delete this email? This can't be undone and it won't be re-imported.")) return;
     await deleteEmail(mid);
     load();
+    refreshStats?.();
   }
   const [syncing, setSyncing] = React.useState(false);
   async function sync() {
     setSyncing(true);
     await syncInbox();
     load();
+    refreshStats?.();
     setSyncing(false);
   }
 
@@ -567,7 +571,7 @@ const Step = ({ n, title, children, first }) => (
       {children}
     </div>
 );
-function AIReview({ selected }) {
+function AIReview({ selected, refreshStats }) {
   const [list, setList] = React.useState([]);
   const [id, setId] = React.useState(selected);
   const [data, setData] = React.useState(null);
@@ -606,7 +610,7 @@ async function makeReply(mode) {
     setWorking(true);
     const r = await replyFromEmail(id, mode);
     if (r.error) setMsg(r.error);
-    else { loadDetail(id); loadList(); }
+    else { loadDetail(id); loadList(); refreshStats?.(); }
     setWorking(false);
   }
 
@@ -614,6 +618,7 @@ async function makeReply(mode) {
     setWorking(true);
     await archiveEmail(id);
     loadList();
+    refreshStats?.();
     setWorking(false);
   }
 
@@ -621,6 +626,7 @@ async function makeReply(mode) {
     setWorking(true);
     await unarchiveEmail(id);
     loadList();
+    refreshStats?.();
     setWorking(false);
   }
   const loadList = React.useCallback(() => {
@@ -649,7 +655,7 @@ React.useEffect(() => { setEditing(false); loadDetail(id); }, [id, loadDetail]);
     setWorking(true);
     const r = await quoteFromEmail(id);
     if (r.error) setMsg(r.error);
-    else { loadDetail(id); loadList(); }
+    else { loadDetail(id); loadList(); refreshStats?.(); }
     setWorking(false);
   }
 
@@ -657,7 +663,7 @@ React.useEffect(() => { setEditing(false); loadDetail(id); }, [id, loadDetail]);
     setWorking(true);
     const r = await draftFromEmail(id);
     if (r.error) setMsg(r.error);
-    else { loadDetail(id); loadList(); }
+    else { loadDetail(id); loadList(); refreshStats?.(); }
     setWorking(false);
   }
 
@@ -668,6 +674,7 @@ async function toGmail() {
       setMsg(r.error);
     } else {
       loadDetail(id);
+      refreshStats?.();
       if (r.gmail_draft_id) {
         window.open(`https://mail.google.com/mail/u/0/#drafts?compose=${r.gmail_draft_id}`, "_blank");
       }
@@ -691,6 +698,7 @@ async function toGmail() {
     ["delivery_followup", "Delivery"],
     ["after_sales", "After-sales"],
     ["payment", "Payment"],
+    ["other", "Other"],
   ];
 
   const shown = list.filter((r) => {
@@ -707,7 +715,7 @@ async function toGmail() {
 
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-5 items-start">
+    <div className="grid grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)] gap-5 items-start">
       <Card title="Emails"
         action={
           <div className="relative">
@@ -1013,23 +1021,21 @@ async function toGmail() {
   );
 }
 
-function Quotations({ go, setPendingDraftNote }) {
+function Quotations({ go, setPendingDraftNote, refreshStats }) {
   const [rows, setRows] = React.useState([]);
   const [open, setOpen] = React.useState(null);
   const [search, setSearch] = React.useState("");
-  const breakdownRef = React.useRef(null);
 
-  function openQuote(q) {
-    setOpen(q);
-    breakdownRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
   const shown = rows.filter((q) => {
     const s = search.toLowerCase();
     return !s || `${q.quote_no} ${q.company} ${q.product} ${q.destination} ${q.status}`.toLowerCase().includes(s);
   });
 
   const load = React.useCallback(() => {
-    getQuotations().then((d) => { setRows(d); if (d.length) setOpen(d[0]); }).catch(() => {});
+    getQuotations().then((d) => {
+      setRows(d);
+      setOpen((cur) => (cur && d.find((x) => x.quote_no === cur.quote_no)) || d[0] || null);
+    }).catch(() => {});
   }, []);
 
   React.useEffect(() => { load(); }, [load]);
@@ -1045,64 +1051,72 @@ function Quotations({ go, setPendingDraftNote }) {
       setPendingDraftNote?.(
         r.error ? "This quote already had a draft — showing it below." : "Draft created."
       );
+      refreshStats?.();
       go?.("drafts", r.draft_id);
     } else {
       setDraftMsg(r.error || "Failed.");
     }
   }
 
+  async function refreshDraft(draftId) {
+    if (!window.confirm("This replaces the draft with a fresh version from the current quotation. Any edits you made will be lost.")) return;
+    await regenerateDraft(draftId);
+    load();
+  }
+
   const stint = (s) => ({
     draft: "bg-slate-100 text-slate-600",
+    drafted: "bg-amber-50 text-amber-700",
     sent: "bg-blue-50 text-blue-700",
     won: "bg-green-50 text-green-700",
     lost: "bg-red-50 text-red-700",
   }[s] || "bg-slate-100 text-slate-600");
 
   return (
-    <div className="space-y-5">
+    <div className="grid grid-cols-1 lg:grid-cols-[340px_minmax(0,1fr)] gap-5 items-start">
       <Card title="Quotations"
         action={
           <div className="relative">
-            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search quotations"
-              className="pl-9 pr-3 py-2 w-56 rounded-lg border border-slate-200 text-sm
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search"
+              className="pl-8 pr-2 py-1.5 w-32 rounded-lg border border-slate-200 text-xs
                          focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500" />
           </div>
         }>
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="border-y border-slate-100">
-              <tr><Th>Quote no.</Th><Th>Customer</Th><Th>Product</Th><Th>Qty</Th><Th>Destination</Th><Th>CIF</Th><Th>Status</Th><Th /></tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {shown.map((q) => (
-                <tr key={q.quote_no}
-                    className={`hover:bg-slate-50 ${open?.quote_no === q.quote_no ? "bg-blue-50/50" : ""}`}>
-                  <Td className="font-mono text-xs text-slate-500">{q.quote_no}</Td>
-                  <Td className="font-medium text-slate-900">{q.company}</Td>
-                  <Td>{q.product}{q.items.length > 1 && ` +${q.items.length - 1} more`}</Td>
-                  <Td className="tabular-nums">{q.quantity.toLocaleString()}</Td>
-                  <Td>{q.destination}</Td>
-                  <Td className="tabular-nums font-medium">USD {q.cif.toLocaleString()}</Td>
-                  <Td><Badge cls={stint(q.status)}>{q.status}</Badge></Td>
-                  <Td>
-                    <button onClick={() => openQuote(q)}
-                      className="text-sm font-medium text-blue-600 hover:text-blue-700">Open</button>
-                  </Td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="divide-y divide-slate-100 border-t border-slate-100 max-h-[70vh] overflow-y-auto">
+          {shown.map((q) => (
+            <button key={q.quote_no} onClick={() => setOpen(q)}
+              className={`w-full text-left px-4 py-3 hover:bg-slate-50 transition-colors
+                ${open?.quote_no === q.quote_no ? "bg-blue-50/70" : ""}`}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-medium text-slate-900 truncate">{q.company}</span>
+                <Badge cls={stint(q.status)}>{q.status}</Badge>
+              </div>
+              <div className="text-xs text-slate-500 mt-0.5 truncate">
+                {q.product}{q.items.length > 1 && ` +${q.items.length - 1} more`}
+              </div>
+              <div className="flex items-center justify-between mt-1.5">
+                <span className="text-xs font-mono text-slate-400">{q.quote_no}</span>
+                <span className="text-xs font-medium text-slate-700 tabular-nums">USD {q.cif.toLocaleString()}</span>
+              </div>
+            </button>
+          ))}
         </div>
         {shown.length === 0 && (
-          <div className="py-16 text-center text-sm text-slate-400">
-            No quotations yet. Emails with a quotation intent generate one automatically.
+          <div className="py-16 text-center text-sm text-slate-400 px-4">
+            {rows.length === 0 ? "No quotations yet. Emails with a quotation intent generate one automatically." : "No quotations match."}
           </div>
         )}
       </Card>
 
+      {!open && (
+        <Card title="Price breakdown">
+          <div className="py-16 text-center text-sm text-slate-400">Select a quotation to see its price breakdown.</div>
+        </Card>
+      )}
+
       {open && (
-        <div ref={breakdownRef}>
+        <div className="space-y-5">
         <Card title={`Price breakdown — ${open.quote_no}`}
           action={
             <div className="flex gap-2">
@@ -1120,6 +1134,15 @@ function Quotations({ go, setPendingDraftNote }) {
             {draftMsg && (
               <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-100 text-sm text-red-700">
                 {draftMsg}
+              </div>
+            )}
+            {open.draft?.outdated && (
+              <div className="flex items-center justify-between gap-3 mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-800">
+                <span>這筆報價重新計算過，草稿裡的金額還是舊的。</span>
+                <button onClick={() => refreshDraft(open.draft.id)}
+                  className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-600 text-white text-xs font-medium hover:bg-amber-700">
+                  Update draft
+                </button>
               </div>
             )}
             {open.items.length > 1 && (
@@ -1221,7 +1244,7 @@ function Quotations({ go, setPendingDraftNote }) {
           </div>
         </Card>
 
-        <Card title={`AI Extraction — ${open.quote_no}`} className="mt-5">
+        <Card title={`AI Extraction — ${open.quote_no}`}>
           <div className="px-6 pb-6">
             <div className="flex items-center justify-between p-3 rounded-lg bg-slate-50 mb-4">
               <div className="text-sm text-slate-600 truncate">
@@ -1269,7 +1292,7 @@ function Quotations({ go, setPendingDraftNote }) {
   );
 }
 
-function Drafts({ selectedId, pendingNote, clearPendingNote }) {
+function Drafts({ selectedId, pendingNote, clearPendingNote, refreshStats }) {
   const [rows, setRows] = React.useState([]);
   const [sel, setSel] = React.useState(null);
   const [tab, setTab] = React.useState("draft");
@@ -1342,6 +1365,10 @@ function Drafts({ selectedId, pendingNote, clearPendingNote }) {
     if (r.ok) {
       setMsg("Saved to Gmail drafts. Review and send it there.");
       load();
+      refreshStats?.();
+      if (r.gmail_draft_id) {
+        window.open(`https://mail.google.com/mail/u/0/#drafts?compose=${r.gmail_draft_id}`, "_blank");
+      }
     } else {
       setMsg(r.error || "Failed.");
     }
@@ -1453,9 +1480,13 @@ function Customers() {
   const [rows, setRows] = React.useState([]);
   const [openId, setOpenId] = React.useState(null);
   const [detail, setDetail] = React.useState(null);
+  const [search, setSearch] = React.useState("");
 
   React.useEffect(() => {
-    getCustomers().then(setRows).catch(() => {});
+    getCustomers().then((d) => {
+      setRows(d);
+      setOpenId((cur) => cur ?? (d.length ? d[0].id : null));
+    }).catch(() => {});
   }, []);
 
   React.useEffect(() => {
@@ -1479,42 +1510,63 @@ function Customers() {
     Sent:     "bg-green-50 text-green-700",
   }[s] || "bg-slate-100 text-slate-600");
 
+  const shown = rows.filter((c) => {
+    const s = search.toLowerCase();
+    return !s || `${c.company} ${c.country || ""} ${c.industry || ""}`.toLowerCase().includes(s);
+  });
+
   return (
-    <div className="space-y-5">
-      <Card title="Customers">
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="border-y border-slate-100">
-              <tr><Th>Company</Th><Th>Country</Th><Th>Industry</Th><Th>Language</Th><Th>Quotations</Th><Th>Total value</Th><Th>Last contact</Th></tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {rows.map((c) => (
-                <tr key={c.id} onClick={() => setOpenId(c.id)}
-                    className={`hover:bg-slate-50 cursor-pointer ${openId === c.id ? "bg-blue-50/50" : ""}`}>
-                  <Td className="font-medium text-slate-900">{c.company}</Td>
-                  <Td>{c.country || "—"}</Td>
-                  <Td>{c.industry || "—"}</Td>
-                  <Td>{c.language}</Td>
-                  <Td>{c.quotations}</Td>
-                  <Td className="font-medium tabular-nums">USD {c.total_value.toLocaleString()}</Td>
-                  <Td className="text-slate-500">{c.last_contact || "—"}</Td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+    <div className="grid grid-cols-1 lg:grid-cols-[340px_minmax(0,1fr)] gap-5 items-start">
+      <Card title="Customers"
+        action={
+          <div className="relative">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search"
+              className="pl-8 pr-2 py-1.5 w-32 rounded-lg border border-slate-200 text-xs
+                         focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500" />
+          </div>
+        }>
+        <div className="divide-y divide-slate-100 border-t border-slate-100 max-h-[70vh] overflow-y-auto">
+          {shown.map((c) => (
+            <button key={c.id} onClick={() => setOpenId(c.id)}
+              className={`w-full text-left px-4 py-3 hover:bg-slate-50 transition-colors
+                ${openId === c.id ? "bg-blue-50/70" : ""}`}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-medium text-slate-900 truncate">{c.company}</span>
+                <span className="text-xs text-slate-400 shrink-0">{c.quotations} quote{c.quotations === 1 ? "" : "s"}</span>
+              </div>
+              <div className="text-xs text-slate-500 mt-0.5 truncate">
+                {[c.country, c.industry].filter(Boolean).join(" · ") || "—"}
+              </div>
+              <div className="flex items-center justify-between mt-1.5">
+                <span className="text-xs font-medium text-slate-700 tabular-nums">USD {c.total_value.toLocaleString()}</span>
+                <span className="text-xs text-slate-400">{c.last_contact || "—"}</span>
+              </div>
+            </button>
+          ))}
         </div>
-        {rows.length === 0 && (
-          <div className="py-16 text-center text-sm text-slate-400">
-            No customers yet. Sync the inbox to build the customer list.
+        {shown.length === 0 && (
+          <div className="py-16 text-center text-sm text-slate-400 px-4">
+            {rows.length === 0 ? "No customers yet. Sync the inbox to build the customer list." : "No customers match."}
           </div>
         )}
       </Card>
 
-      {openId != null && (
-        <Card title={detail ? `History — ${detail.company}` : "History"}>
-          {!detail ? (
-            <div className="py-10 text-center text-sm text-slate-400">Loading…</div>
-          ) : (
+      <Card title={detail ? detail.company : "History"}>
+        {openId == null && (
+          <div className="py-16 text-center text-sm text-slate-400">Select a customer to see their history.</div>
+        )}
+        {openId != null && !detail && (
+          <div className="py-16 text-center text-sm text-slate-400">Loading…</div>
+        )}
+        {detail && (
+          <div className="px-6 pb-6">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-3 mb-5 pb-5 border-b border-slate-100">
+              <div><div className="text-xs text-slate-400">Contact</div><div className="text-sm font-medium text-slate-900">{detail.contact || "—"}</div></div>
+              <div><div className="text-xs text-slate-400">Email</div><div className="text-sm font-medium text-slate-900 truncate">{detail.email || "—"}</div></div>
+              <div><div className="text-xs text-slate-400">Country</div><div className="text-sm font-medium text-slate-900">{detail.country || "—"}</div></div>
+              <div><div className="text-xs text-slate-400">Total value</div><div className="text-sm font-medium text-slate-900 tabular-nums">USD {detail.total_value.toLocaleString()}</div></div>
+            </div>
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead className="border-y border-slate-100">
@@ -1539,9 +1591,9 @@ function Customers() {
                 <div className="py-10 text-center text-sm text-slate-400">No inquiries from this customer yet.</div>
               )}
             </div>
-          )}
-        </Card>
-      )}
+          </div>
+        )}
+      </Card>
     </div>
   );
 }
@@ -2037,6 +2089,9 @@ function SettingsPage() {
   const [portSaving, setPortSaving] = React.useState(false);
   const [portMsg, setPortMsg] = React.useState(null);
 
+  const [resetting, setResetting] = React.useState(false);
+  const [resetMsg, setResetMsg] = React.useState(null);
+
   React.useEffect(() => {
     getSystemInfo().then(setInfo).catch(() => {});
     getSettings().then((s) => {
@@ -2077,6 +2132,24 @@ function SettingsPage() {
       setSyncMsg("Couldn't save. Check the backend is running.");
     } finally {
       setSyncSaving(false);
+    }
+  }
+
+  async function doReset() {
+    if (!window.confirm(
+      "This deletes every email, inquiry, quotation, and draft, then restores the " +
+      "default products, price settings, and freight rates. Gmail authorisation is " +
+      "not affected. This cannot be undone. Continue?"
+    )) return;
+    setResetting(true);
+    setResetMsg(null);
+    try {
+      await resetDatabase();
+      setResetMsg("Database reset. Reloading…");
+      setTimeout(() => window.location.reload(), 800);
+    } catch {
+      setResetMsg("Couldn't reset. Check the backend is running.");
+      setResetting(false);
     }
   }
 
@@ -2163,6 +2236,28 @@ function SettingsPage() {
           </button>
         </div>
       </Card>
+
+      <Card title="Danger zone" className="lg:col-span-2">
+        <div className="px-6 pb-6">
+          <div className="flex items-start justify-between gap-4 p-4 rounded-lg border border-red-200 bg-red-50">
+            <div>
+              <div className="text-sm font-medium text-red-900">Reset database</div>
+              <p className="text-xs text-red-700 mt-1 leading-relaxed">
+                Deletes every email, inquiry, quotation and draft, then restores the
+                default products, price settings and freight rates — the same as
+                deleting <code>tradequote.db</code> and running <code>seed.py</code>.
+                Gmail authorisation is not affected. This cannot be undone.
+              </p>
+              {resetMsg && <p className="text-xs text-red-800 font-medium mt-2">{resetMsg}</p>}
+            </div>
+            <button onClick={doReset} disabled={resetting}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium
+                         hover:bg-red-700 disabled:bg-red-300 shrink-0">
+              <Trash2 size={14} /> {resetting ? "Resetting…" : "Reset database"}
+            </button>
+          </div>
+        </div>
+      </Card>
     </div>
   );
 }
@@ -2179,7 +2274,26 @@ export default function App() {
   });
   const [stats, setStats] = useState(null);
   const [pendingDraftNote, setPendingDraftNote] = useState(null);
-  React.useEffect(() => { getStats().then(setStats).catch(() => {}); }, [page]);
+
+  // 側邊欄的未讀/待處理數字跟這個 stats 綁在一起。單靠 [page] 依賴只會在「切換
+  // 頁面」時重抓一次，同一頁按下 Sync / 產生草稿之類的動作不會觸發，數字看起來
+  // 就像卡住、要切出去再切回來才會動——所以動作發生時由各頁面主動呼叫
+  // refreshStats() 立即更新，另外用輪詢 + 視窗回到前景當保底，避免漏掉任何情況。
+  const refreshStats = React.useCallback(() => {
+    getStats().then(setStats).catch(() => {});
+  }, []);
+
+  React.useEffect(() => { refreshStats(); }, [page, refreshStats]);
+
+  React.useEffect(() => {
+    const id = setInterval(refreshStats, 20000);
+    window.addEventListener("focus", refreshStats);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("focus", refreshStats);
+    };
+  }, [refreshStats]);
+
   const badges = {
     inbox: stats?.unread || 0,
     drafts: stats?.pending_drafts || 0,
@@ -2189,11 +2303,11 @@ export default function App() {
 
   const body = {
     dashboard:  <Dashboard go={go} />,
-    inbox:      <InboxPage go={go} />,
-    ai:         <AIReview selected={selected} setSelected={setSelected} />,
-    quotations: <Quotations settings={settings} go={go} setPendingDraftNote={setPendingDraftNote} />,
+    inbox:      <InboxPage go={go} refreshStats={refreshStats} />,
+    ai:         <AIReview selected={selected} setSelected={setSelected} refreshStats={refreshStats} />,
+    quotations: <Quotations settings={settings} go={go} setPendingDraftNote={setPendingDraftNote} refreshStats={refreshStats} />,
     drafts:     <Drafts selectedId={selected} pendingNote={pendingDraftNote}
-                  clearPendingNote={() => setPendingDraftNote(null)} />,
+                  clearPendingNote={() => setPendingDraftNote(null)} refreshStats={refreshStats} />,
     customers:  <Customers />,
     products:   <Products />,
     pricing:    <PriceSettings settings={settings} setSettings={setSettings} />,
