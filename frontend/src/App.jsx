@@ -9,6 +9,9 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar
 } from "recharts";
+import { geoNaturalEarth1, geoPath, geoInterpolate, geoGraticule } from "d3-geo";
+import { feature, mesh } from "topojson-client";
+import worldTopo from "./assets/world-110m.json";
 
 import { getInbox, getEmail, getStats, getProducts, getQuotations, getCustomers, getCustomer,
          markViewed, getSettings, getFreight, saveSettings,
@@ -72,6 +75,55 @@ const COUNTRY_OPTIONS = [
   "Singapore", "Spain", "Taiwan", "Thailand", "Turkey", "UAE", "UK", "USA",
   "Vietnam",
 ];
+
+// 國家中心點座標 [經度, 緯度]，Freight by destination 地圖用。
+// 只涵蓋 COUNTRY_OPTIONS 裡會出現的國家；沒填港口時的預設定位點。
+const COUNTRY_COORDS = {
+  "Australia": [133.775, -25.274], "Belgium": [4.4699, 50.5039],
+  "Brazil": [-51.9253, -14.235], "Canada": [-106.3468, 56.1304],
+  "China": [104.1954, 35.8617], "Egypt": [30.8025, 26.8206],
+  "France": [2.2137, 46.2276], "Germany": [10.4515, 51.1657],
+  "Hong Kong": [114.1095, 22.3964], "India": [78.9629, 20.5937],
+  "Indonesia": [113.9213, -0.7893], "Italy": [12.5674, 41.8719],
+  "Japan": [138.2529, 36.2048], "Korea": [127.7669, 35.9078],
+  "Malaysia": [101.9758, 4.2105], "Mexico": [-102.5528, 23.6345],
+  "Netherlands": [5.2913, 52.1326], "Poland": [19.1451, 51.9194],
+  "Russia": [105.3188, 61.524], "Saudi Arabia": [45.0792, 23.8859],
+  "Singapore": [103.8198, 1.3521], "Spain": [-3.7492, 40.4637],
+  "Taiwan": [120.9605, 23.6978], "Thailand": [100.9925, 15.87],
+  "Turkey": [35.2433, 38.9637], "UAE": [53.8478, 23.4241],
+  "UK": [-3.436, 55.3781], "USA": [-95.7129, 37.0902],
+  "Vietnam": [108.2772, 14.0583],
+};
+
+// 有填港口/城市名時，優先用這裡更精確的座標（小寫 key）。
+const PORT_COORDS = {
+  "kaohsiung": [120.3014, 22.6163], "osaka": [135.5023, 34.6937],
+  "tokyo": [139.6917, 35.6895], "yokohama": [139.638, 35.4437],
+  "kobe": [135.1955, 34.6901], "nagoya": [136.9066, 35.1815],
+  "busan": [129.0756, 35.1796], "incheon": [126.7052, 37.4563],
+  "seoul": [126.978, 37.5665], "hong kong": [114.1694, 22.3193],
+  "jebel ali": [55.0272, 25.0118], "dubai": [55.2708, 25.2048],
+  "abu dhabi": [54.3773, 24.4539], "manzanillo": [-104.3186, 19.0546],
+  "veracruz": [-96.1342, 19.1738], "mexico city": [-99.1332, 19.4326],
+  "sydney": [151.2093, -33.8688], "melbourne": [144.9631, -37.8136],
+  "brisbane": [153.0251, -27.4698], "hamburg": [9.9937, 53.5511],
+  "bremerhaven": [8.581, 53.5396], "rotterdam": [4.4777, 51.9244],
+  "alexandria": [29.9187, 31.2001], "port said": [32.3019, 31.2653],
+  "cairo": [31.2357, 30.0444], "singapore": [103.8198, 1.3521],
+  "shanghai": [121.4737, 31.2304], "shenzhen": [114.0579, 22.5431],
+  "ningbo": [121.544, 29.8683], "los angeles": [-118.2437, 34.0522],
+  "long beach": [-118.1937, 33.7701], "new york": [-74.006, 40.7128],
+  "genoa": [8.9463, 44.4056], "milan": [9.19, 45.4642],
+  "gdansk": [18.6466, 54.352], "warsaw": [21.0122, 52.2297],
+  "santos": [-46.3336, -23.9608], "sao paulo": [-46.6333, -23.5505],
+};
+
+function freightCoords(f) {
+  const port = (f.port || "").trim().toLowerCase();
+  if (port && PORT_COORDS[port]) return PORT_COORDS[port];
+  return COUNTRY_COORDS[f.destination] || null;
+}
 
 const emails = [
   { id: 1, date: "2026-07-20 09:15", from: "ABC Trading Co.", contact: "Mr. Smith",
@@ -1729,6 +1781,292 @@ function Customers() {
   );
 }
 
+// 以高雄為中心的互動世界地圖，Freight by destination 用來標示每個目的地。
+// 依照這個點相對地圖中心的方向，把標籤往外推，並夾在畫布範圍內，
+// 避免標籤被地圖邊緣裁掉，或跟其他點/標籤疊在一起看不清楚。
+function measureLabel(text) {
+  // 中文字／全形字比英文字寬，照字元寬度分開算，不然「Kaohsiung（出貨港）」
+  // 這種中英夾雜的文字會被算得太窄，超出背景框（爆框）。
+  const chineseCharCount = (text.match(/[一-龥　-〿＀-￯]/g) || []).length;
+  const asciiCharCount = text.length - chineseCharCount;
+  const textW = Math.max(60, asciiCharCount * 7.5 + chineseCharCount * 13 + 24);
+  return { textW, textH: 22 };
+}
+
+// 點到矩形的最短距離（矩形內或壓到邊界算 0）。標籤要用矩形而不是單一
+// 中心點去判斷碰撞，不然像「Kaohsiung（出貨港）」這種寬標籤，中心點雖然
+// 已經推得夠遠，但矩形邊緣還是會蓋到旁邊的港口圓點。
+function pointToRectDist(px, py, rect) {
+  const closestX = Math.max(rect.x, Math.min(px, rect.x + rect.w));
+  const closestY = Math.max(rect.y, Math.min(py, rect.y + rect.h));
+  return Math.hypot(px - closestX, py - closestY);
+}
+
+// 折線（航線取樣點連成的線）到矩形的最短距離：取樣點夠密（50 點），逐點
+// 算 pointToRectDist 取最小值即可近似，不用算真正的線段對矩形距離。
+function polylineToRectDist(pts, rect) {
+  if (!pts || pts.length < 2) return Infinity;
+  let min = Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const d = pointToRectDist(pts[i][0], pts[i][1], rect);
+    if (d < min) min = d;
+    if (min === 0) break;
+  }
+  return min;
+}
+
+// 標籤推移方向的候選方位（相對點位的像素位移）。近距離 8 個方位優先用，
+// 但像高雄跟香港這種螢幕上只差十幾 px 的兩個點，標籤寬度（150~200px）
+// 遠大於近距離候選的位移量，無論推哪個近距離方位都會互撞；這種情況要
+// 靠遠距離的第二圈候選，把其中一個標籤推得更遠才能真正避開。
+const LABEL_OFFSET_CANDIDATES = [
+  { dx: 45, dy: 22 },   // 東南（近）
+  { dx: 45, dy: -25 },  // 東北（近）
+  { dx: -55, dy: -25 }, // 西北（近）
+  { dx: -55, dy: 22 },  // 西南（近）
+  { dx: 0, dy: 35 },    // 正南（近）
+  { dx: 0, dy: -35 },   // 正北（近）
+  { dx: 60, dy: 0 },    // 正東（近）
+  { dx: -60, dy: 0 },   // 正西（近）
+  { dx: 95, dy: 48 },   // 東南（遠）
+  { dx: 95, dy: -55 },  // 東北（遠）
+  { dx: -115, dy: -55 },// 西北（遠）
+  { dx: -115, dy: 48 }, // 西南（遠）
+  { dx: 0, dy: 75 },    // 正南（遠）
+  { dx: 0, dy: -75 },   // 正北（遠）
+  { dx: 130, dy: 0 },   // 正東（遠）
+  { dx: -130, dy: 0 },  // 正西（遠）
+];
+
+// 把標籤往「地圖中心外推」的自然方向，當作最優先候選——不撞到東西的話
+// 用這個畫面比較好看，真的會遮擋時才退而求其次改用羅盤方位。
+function awayFromCenterOffset(x, y, w, h, dist = 30) {
+  const angle = Math.atan2(y - h / 2, x - w / 2);
+  return { dx: Math.cos(angle) * dist, dy: Math.sin(angle) * dist };
+}
+
+// 標籤碰撞評分：對每個候選推移方位算懲罰分數，用標籤實際的矩形範圍
+// （labelSize）去量「離需要閃避的點（其他港口圓點、其他標籤的位置）」
+// 跟「離航線」的距離，太近就加分，選分數最低的方位。同分時取陣列中
+// 較前面的（用來保留自然位置，只有真的會遮擋才換方位）。
+function pickLabelOffset(anchor, candidates, { avoidPoints = [], avoidPolyline = null, labelSize }) {
+  const [ax, ay] = anchor;
+  const { textW, textH } = labelSize;
+  let best = candidates[0];
+  let minPenalty = Infinity;
+
+  candidates.forEach((cand) => {
+    const lx = ax + cand.dx;
+    const ly = ay + cand.dy;
+    const rect = { x: lx - textW / 2, y: ly - textH / 2, w: textW, h: textH };
+    let penalty = 0;
+
+    avoidPoints.forEach(([px, py, minDist, weight]) => {
+      const d = pointToRectDist(px, py, rect);
+      if (d < minDist) penalty += (minDist - d) * weight;
+    });
+
+    if (avoidPolyline) {
+      const d = polylineToRectDist(avoidPolyline, rect);
+      if (d < 20) penalty += (20 - d) * 8;
+    }
+
+    if (penalty < minPenalty) {
+      minPenalty = penalty;
+      best = cand;
+    }
+  });
+
+  return best;
+}
+
+function MapLabel({ x, y, text, w, h, fill, stroke, textColor, customOffset }) {
+  const { textW, textH } = measureLabel(text);
+  const lx = Math.min(Math.max(x + customOffset.dx, textW / 2 + 8), w - textW / 2 - 8);
+  const ly = Math.min(Math.max(y + customOffset.dy, textH + 4), h - 8);
+  return (
+    <g style={{ pointerEvents: "none" }} className="transition-all duration-200">
+      <rect x={lx - textW / 2} y={ly - textH + 4} width={textW} height={textH} rx="6"
+        fill={fill} stroke={stroke} strokeWidth="1"
+        style={{ filter: "drop-shadow(0px 2px 4px rgba(0,0,0,0.08))" }} />
+      <text x={lx} y={ly - 3} textAnchor="middle" fontSize="11.5" fontWeight="600" fill={textColor}
+        style={{ letterSpacing: "0.2px" }}>
+        {text}
+      </text>
+    </g>
+  );
+}
+
+function WorldMap({ points, selectedId, onSelect }) {
+  const width = 760, height = 440;
+  const [hoveredId, setHoveredId] = React.useState(null);
+
+  const { landPath, bordersPath, coastPath, graticulePath, project, pathGen } = React.useMemo(() => {
+    const proj = geoNaturalEarth1()
+      .rotate([-121, 0, 0]) // 重新置中到台灣經度
+      .fitExtent([[10, 10], [width - 10, height - 10]], feature(worldTopo, worldTopo.objects.land));
+    const pGen = geoPath(proj);
+    const land = feature(worldTopo, worldTopo.objects.land);
+    const borders = mesh(worldTopo, worldTopo.objects.countries, (a, b) => a !== b);
+    const coast = mesh(worldTopo, worldTopo.objects.land);
+    const graticule = geoGraticule().step([15, 15])();
+    return {
+      landPath: pGen(land),
+      bordersPath: pGen(borders),
+      coastPath: pGen(coast),
+      graticulePath: pGen(graticule),
+      project: (lon, lat) => proj([lon, lat]),
+      pathGen: pGen,
+    };
+  }, []);
+
+  const hubCoord = PORT_COORDS.kaohsiung;
+  const hubPos = project(...hubCoord);
+  const selected = points.find((p) => p.id === selectedId);
+  const hovered = !selected || hoveredId !== selectedId ? points.find((p) => p.id === hoveredId) : null;
+
+  // 選中目的地時，用大圓內插法算出一條沿著地球表面弧度的平滑航線，
+  // 不是畫面上兩點間的直線；同時保留取樣點的螢幕座標（routeSamples），
+  // 讓標籤碰撞評分能照航線實際的彎曲折線去閃避，而不是簡化成直線。
+  const { routePath, routeSamples } = React.useMemo(() => {
+    if (!selected) return { routePath: null, routeSamples: null };
+    const interpolate = geoInterpolate(hubCoord, [selected.lon, selected.lat]);
+    const samples = Array.from({ length: 50 }, (_, i) => interpolate(i / 49));
+    return {
+      routePath: pathGen({ type: "Feature", geometry: { type: "LineString", coordinates: samples } }),
+      routeSamples: samples.map(([lon, lat]) => project(lon, lat)),
+    };
+  }, [selected, hubCoord, pathGen, project]);
+
+  const allPointPositions = React.useMemo(
+    () => points.map((p) => ({ id: p.id, pos: project(p.lon, p.lat) })),
+    [points, project]
+  );
+
+  // 高雄樞紐標籤：8 個羅盤方位候選中，挑離所有港口圓點、選中的目的地、
+  // 航線都夠遠的方位（預設東南，除非那個方向剛好撞到東西）。
+  const hubOffset = React.useMemo(() => {
+    const avoidPoints = allPointPositions.map(({ pos: [x, y] }) => [x, y, 35, 15]);
+    if (selected) {
+      const [sx, sy] = project(selected.lon, selected.lat);
+      avoidPoints.push([sx, sy, 80, 10]);
+    }
+    return pickLabelOffset(hubPos, LABEL_OFFSET_CANDIDATES, {
+      avoidPoints, avoidPolyline: routeSamples, labelSize: measureLabel("Kaohsiung（出貨港）"),
+    });
+  }, [selected, hubPos, allPointPositions, routeSamples, project]);
+  const hubLabelPos = [hubPos[0] + hubOffset.dx, hubPos[1] + hubOffset.dy];
+
+  // 選中目的地的標籤：優先用「往地圖中心外推」的自然方位，撞到高雄標籤／
+  // 其他港口圓點／航線時才改用羅盤候選方位。
+  const selectedOffset = React.useMemo(() => {
+    if (!selected) return null;
+    const [sx, sy] = project(selected.lon, selected.lat);
+    const avoidPoints = allPointPositions
+      .filter(({ id }) => id !== selected.id)
+      .map(({ pos: [x, y] }) => [x, y, 35, 15]);
+    avoidPoints.push([hubPos[0], hubPos[1], 40, 15]);
+    avoidPoints.push([hubLabelPos[0], hubLabelPos[1], 90, 12]);
+    const natural = awayFromCenterOffset(sx, sy, width, height);
+    return pickLabelOffset([sx, sy], [natural, ...LABEL_OFFSET_CANDIDATES], {
+      avoidPoints, avoidPolyline: routeSamples, labelSize: measureLabel(`${selected.label}  ⚓`),
+    });
+  }, [selected, hubPos, hubLabelPos, allPointPositions, routeSamples, project]);
+
+  // 滑鼠懸停的標籤（跟選中的目的地不同點時才會出現）：額外閃避高雄標籤
+  // 跟選中目的地的標籤，避免滑過去時三個標籤互相打架。
+  const hoveredOffset = React.useMemo(() => {
+    if (!hovered) return null;
+    const [hx, hy] = project(hovered.lon, hovered.lat);
+    const avoidPoints = allPointPositions
+      .filter(({ id }) => id !== hovered.id)
+      .map(({ pos: [x, y] }) => [x, y, 35, 15]);
+    avoidPoints.push([hubPos[0], hubPos[1], 40, 15]);
+    avoidPoints.push([hubLabelPos[0], hubLabelPos[1], 90, 12]);
+    if (selected && selectedOffset) {
+      const [sx, sy] = project(selected.lon, selected.lat);
+      avoidPoints.push([sx + selectedOffset.dx, sy + selectedOffset.dy, 90, 12]);
+    }
+    const natural = awayFromCenterOffset(hx, hy, width, height);
+    return pickLabelOffset([hx, hy], [natural, ...LABEL_OFFSET_CANDIDATES], {
+      avoidPoints, avoidPolyline: routeSamples, labelSize: measureLabel(hovered.label),
+    });
+  }, [hovered, selected, selectedOffset, hubPos, hubLabelPos, allPointPositions, routeSamples, project]);
+
+  return (
+    <div className="relative w-full overflow-hidden rounded-2xl border border-slate-200/80 shadow-sm">
+      <style>{`
+        @keyframes dash { to { stroke-dashoffset: -20; } }
+        .animate-route { stroke-dasharray: 6 4; animation: dash 1.2s linear infinite; }
+      `}</style>
+
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto select-none bg-[#84bfe7]">
+        <rect x="0" y="0" width={width} height={height} fill="#84bfe7" />
+        <path d={graticulePath} fill="none" stroke="rgba(255,255,255,0.45)" strokeWidth="0.5" strokeDasharray="2 2" />
+        <path d={landPath} fill="#d5dfe9" strokeLinejoin="round" />
+        <path d={bordersPath} fill="none" stroke="#a4b7c9" strokeWidth="0.5" strokeDasharray="1.5 1.5" />
+        <path d={coastPath} fill="none" stroke="#91a6ba" strokeWidth="0.75" strokeLinejoin="round" />
+
+        {/* 標籤背景/文字先畫，航線再疊上去，這樣航線纔不會被標籤的白底切斷，
+            可以順順地連到點位中心。 */}
+        <MapLabel x={hubPos[0]} y={hubPos[1]} text="Kaohsiung（出貨港）" w={width} h={height}
+          fill="#FFFBEB" stroke="#D97706" textColor="#92400E" customOffset={hubOffset} />
+
+        {hovered && hoveredOffset && (
+          <MapLabel x={project(hovered.lon, hovered.lat)[0]} y={project(hovered.lon, hovered.lat)[1]}
+            text={hovered.label} w={width} h={height}
+            fill="#FFFFFF" stroke="#E2E8F0" textColor="#334155" customOffset={hoveredOffset} />
+        )}
+
+        {selected && selectedOffset && (
+          <MapLabel x={project(selected.lon, selected.lat)[0]} y={project(selected.lon, selected.lat)[1]}
+            text={`${selected.label}  ⚓`} w={width} h={height}
+            fill="#FFFFFF" stroke="#CBD5E1" textColor="#334155" customOffset={selectedOffset} />
+        )}
+
+        {selected && routePath && (
+          <g>
+            <path d={routePath} fill="none" stroke="#9F1239" strokeWidth="4" opacity="0.25" strokeLinecap="round"
+              style={{ filter: "blur(2px)" }} />
+            <path d={routePath} fill="none" stroke="#EF4444" strokeWidth="2" strokeLinecap="round" className="animate-route" />
+          </g>
+        )}
+
+        {/* 所有點位（含高雄）最後畫，永遠在標籤跟航線最上層，不會被蓋住。 */}
+        <g onMouseEnter={() => setHoveredId("__hub__")} onMouseLeave={() => setHoveredId((cur) => (cur === "__hub__" ? null : cur))}
+          className="cursor-pointer">
+          <circle cx={hubPos[0]} cy={hubPos[1]} r="9" fill="none" stroke="#D97706" strokeWidth="1.5" opacity="0.5" />
+          <circle cx={hubPos[0]} cy={hubPos[1]} r="5" fill="#F59E0B" stroke="#FFFFFF" strokeWidth="1.5" />
+        </g>
+
+        {points.map((p) => {
+          const [x, y] = project(p.lon, p.lat);
+          const isSelected = p.id === selectedId;
+          const isHovered = p.id === hoveredId && !isSelected;
+          return (
+            <g key={p.id}
+              onClick={() => onSelect(p.id)}
+              onMouseEnter={() => setHoveredId(p.id)}
+              onMouseLeave={() => setHoveredId((cur) => (cur === p.id ? null : cur))}
+              className="cursor-pointer">
+              <circle cx={x} cy={y} r="14" fill="transparent" />
+              {isSelected && (
+                <circle cx={x} cy={y} r="10" fill="#EF4444" opacity="0.25"
+                  className="animate-ping" style={{ transformOrigin: `${x}px ${y}px` }} />
+              )}
+              <circle cx={x} cy={y} r={isSelected ? 6 : isHovered ? 5.5 : 4}
+                fill={isSelected ? "#DC2626" : isHovered ? "#F87171" : "#EF4444"}
+                stroke="#FFFFFF" strokeWidth={isSelected ? 2 : 1.2}
+                className="transition-all duration-200"
+                style={{ filter: isSelected ? "drop-shadow(0px 2px 4px rgba(220, 38, 38, 0.4))" : "none" }} />
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
 function PriceSettings() {
   const [v, setV] = React.useState(null);
   const [freight, setFreight] = React.useState([]);
@@ -1741,9 +2079,14 @@ function PriceSettings() {
   const [freightForm, setFreightForm] = React.useState({
     destination: "", port: "", cost: "", transit: "",
   });
+  const [freightSearch, setFreightSearch] = React.useState("");
+  const [selectedFreight, setSelectedFreight] = React.useState(null);
 
   const loadFreight = React.useCallback(() => {
-    getFreight().then(setFreight).catch(() => {});
+    getFreight().then((d) => {
+      setFreight(d);
+      setSelectedFreight((cur) => (cur && d.some((f) => f.destination === cur) ? cur : d[0]?.destination ?? null));
+    }).catch(() => {});
   }, []);
 
   React.useEffect(() => {
@@ -1840,6 +2183,17 @@ function PriceSettings() {
         </div>
       </Card>
 
+      <div className="lg:col-span-2 flex items-center justify-between gap-4 px-5 py-4 rounded-xl border border-slate-200 bg-white">
+        <div className="text-xs text-slate-400">
+          {msg || `Last updated ${v.updated_at}. Existing quotations keep the values they were priced with.`}
+        </div>
+        <button onClick={save} disabled={saving}
+          className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium
+                     hover:bg-blue-700 disabled:bg-slate-300 shrink-0">
+          {saving ? "Saving…" : "Save settings"}
+        </button>
+      </div>
+
       <Card title="Freight by destination" className="lg:col-span-2"
         action={
           <button onClick={() => freightAdding ? resetFreightForm() : setFreightAdding(true)}
@@ -1884,42 +2238,89 @@ function PriceSettings() {
           </div>
         )}
 
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="border-y border-slate-100">
-              <tr><Th>Destination</Th><Th>Port</Th><Th>Cost</Th><Th>Transit</Th><Th /></tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {freight.map((f) => (
-                <tr key={f.destination} className="hover:bg-slate-50">
-                  <Td className="font-medium text-slate-900">{f.destination}</Td>
-                  <Td>{f.port || "—"}</Td>
-                  <Td className="tabular-nums">USD {f.cost_usd.toLocaleString()}</Td>
-                  <Td className="text-slate-500">{f.transit_days ? `${f.transit_days} days` : "—"}</Td>
-                  <Td>
-                    <button onClick={() => removeFreight(f.destination)}
-                      className="text-sm font-medium text-red-600 hover:text-red-700">
+        {(() => {
+          const shownFreight = freight.filter((f) => {
+            const s = freightSearch.toLowerCase();
+            return !s || `${f.destination} ${f.port || ""}`.toLowerCase().includes(s);
+          });
+          const mapPoints = freight
+            .map((f) => {
+              const coords = freightCoords(f);
+              if (!coords) return null;
+              return { id: f.destination, lon: coords[0], lat: coords[1],
+                       label: f.port ? `${f.destination} · ${f.port}` : f.destination };
+            })
+            .filter(Boolean);
+          const sel = freight.find((f) => f.destination === selectedFreight);
+
+          return (
+            <div className="grid grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] gap-5 p-5">
+              <div>
+                <div className="relative mb-3">
+                  <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input value={freightSearch} onChange={(e) => setFreightSearch(e.target.value)}
+                    placeholder="Search destinations"
+                    className="pl-8 pr-2 py-1.5 w-full rounded-lg border border-slate-200 text-xs
+                               focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500" />
+                </div>
+                <div className="divide-y divide-slate-100 border border-slate-100 rounded-lg max-h-[26rem] overflow-y-auto">
+                  {shownFreight.map((f) => (
+                    <button key={f.destination} onClick={() => setSelectedFreight(f.destination)}
+                      className={`w-full text-left px-3 py-2.5 hover:bg-slate-50 transition-colors
+                        ${selectedFreight === f.destination ? "bg-blue-50/70" : ""}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-medium text-slate-900 truncate">{f.destination}</span>
+                        {!freightCoords(f) && (
+                          <span className="text-[10px] text-amber-600 shrink-0" title="地圖上找不到座標">無座標</span>
+                        )}
+                      </div>
+                      <div className="text-xs text-slate-500 truncate">{f.port || "—"}</div>
+                      <div className="flex items-center justify-between mt-1">
+                        <span className="text-xs text-slate-400">{f.transit_days ? `${f.transit_days} 天` : "—"}</span>
+                        <span className="text-xs font-medium text-slate-700 tabular-nums">USD {f.cost_usd.toLocaleString()}</span>
+                      </div>
+                    </button>
+                  ))}
+                  {shownFreight.length === 0 && (
+                    <div className="py-10 text-center text-xs text-slate-400 px-3">
+                      {freight.length === 0 ? "No destinations yet." : "No destinations match."}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <WorldMap points={mapPoints} selectedId={selectedFreight} onSelect={setSelectedFreight} />
+                {sel ? (
+                  <div className="mt-4 flex items-center justify-between gap-4 p-4 rounded-lg border border-slate-200 bg-slate-50">
+                    <div className="flex gap-8">
+                      <div>
+                        <div className="text-xs text-slate-400">Destination</div>
+                        <div className="text-sm font-semibold text-slate-900">{sel.destination}{sel.port ? ` · ${sel.port}` : ""}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-400">Freight cost</div>
+                        <div className="text-sm font-semibold text-slate-900">USD {sel.cost_usd.toLocaleString()}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-400">Transit</div>
+                        <div className="text-sm font-semibold text-slate-900">{sel.transit_days ? `${sel.transit_days} days` : "—"}</div>
+                      </div>
+                    </div>
+                    <button onClick={() => removeFreight(sel.destination)}
+                      className="shrink-0 text-sm font-medium text-red-600 hover:text-red-700">
                       Delete
                     </button>
-                  </Td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {freight.length === 0 && (
-            <div className="py-16 text-center text-sm text-slate-400">No destinations yet.</div>
-          )}
-        </div>
-        <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-between gap-4">
-          <div className="text-xs text-slate-400">
-            {msg || `Last updated ${v.updated_at}. Existing quotations keep the values they were priced with.`}
-          </div>
-          <button onClick={save} disabled={saving}
-            className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium
-                       hover:bg-blue-700 disabled:bg-slate-300 shrink-0">
-            {saving ? "Saving…" : "Save settings"}
-          </button>
-        </div>
+                  </div>
+                ) : (
+                  <div className="mt-4 py-6 text-center text-sm text-slate-400 border border-dashed border-slate-200 rounded-lg">
+                    Select a destination from the list.
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
       </Card>
 
       <Card title="Incoterms 說明" className="lg:col-span-2">
